@@ -1,0 +1,17 @@
+{
+  "name": "iLabs nRF52 FOTA",
+  "version": "0.1.0",
+  "description": "LTE/HTTPS firmware-over-the-air updates for nRF52 devices with external QSPI flash. Downloads a gzip-compressed firmware slot image over a caller-supplied HTTPS transport, stream-stages it into a QSPI download partition, verifies SHA-256 against the slot header, and arms the Adafruit-fork bootloader settings block. Modem-agnostic: transport and system couplings are injected.",
+  "keywords": "fota, firmware, ota, update, nrf52, lte, qspi",
+  "authors": {
+    "name": "Pontus Oldberg",
+    "email": "pontus@ilabs.se",
+    "maintainer": true
+  },
+  "license": "MIT",
+  "frameworks": "arduino",
+  "platforms": "nordicnrf52",
+  "headers": [
+    "iLabs_nrf52_fota.h"
+  ]
+}

@@ -1,0 +1,40 @@
+#######################################
+# Syntax coloring for iLabs nRF52 FOTA
+#######################################
+
+#######################################
+# Datatypes / classes (KEYWORD1)
+#######################################
+FOTA	KEYWORD1
+iLabsFotaClass	KEYWORD1
+iLabsFotaQspi	KEYWORD1
+iLabsFotaResult	KEYWORD1
+iLabsFotaTestResult	KEYWORD1
+
+#######################################
+# Methods and functions (KEYWORD2)
+#######################################
+begin	KEYWORD2
+suspend	KEYWORD2
+resume	KEYWORD2
+ready	KEYWORD2
+setFirmwareUrl	KEYWORD2
+setDeviceType	KEYWORD2
+setMegachunkSize	KEYWORD2
+setTransport	KEYWORD2
+setTestTransport	KEYWORD2
+setLogSink	KEYWORD2
+onSessionBegin	KEYWORD2
+onSessionEnd	KEYWORD2
+update	KEYWORD2
+transportSelfTest	KEYWORD2
+triggerUpdate	KEYWORD2
+confirmBoot	KEYWORD2
+readSettings	KEYWORD2
+qspi	KEYWORD2
+
+#######################################
+# Constants / macros (LITERAL1)
+#######################################
+ILABS_DEVICE_TYPE	LITERAL1
+ILABS_FW_VERSION	LITERAL1

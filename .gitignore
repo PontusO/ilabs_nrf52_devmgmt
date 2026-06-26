@@ -1,0 +1,13 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.elf
+*.hex
+*.bin
+
+# Editor / OS cruft
+.DS_Store
+*.swp
+*~
+.vscode/
