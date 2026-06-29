@@ -27,6 +27,14 @@ int  ilabs_fota__range_get(const char* url, size_t range_offset,
 int  ilabs_fota__plain_get(const char* url,
                            ilabs_fota_chunk_cb_t cb, void* user);
 
+// Invoke the registered HTTPS POST transport (log upload). Returns the
+// transport's HTTP status, or -1 if no upload transport has been
+// registered.
+int  ilabs_log_upload__post(const char* url,
+                            const uint8_t* body, size_t body_len,
+                            const char* sha256_hex,
+                            ilabs_fota_chunk_cb_t response_cb, void* user);
+
 // Runtime-configurable parameters owned by iLabsFotaClass, read by the
 // orchestrator. Defaults: device_type = ILABS_DEVICE_TYPE, megachunk =
 // 100 KiB.

@@ -10,6 +10,7 @@ iLabsFotaClass	KEYWORD1
 iLabsFotaQspi	KEYWORD1
 iLabsFotaResult	KEYWORD1
 iLabsFotaTestResult	KEYWORD1
+iLabsLogUploadResult	KEYWORD1
 
 #######################################
 # Methods and functions (KEYWORD2)
@@ -23,6 +24,8 @@ setDeviceType	KEYWORD2
 setMegachunkSize	KEYWORD2
 setTransport	KEYWORD2
 setTestTransport	KEYWORD2
+setUploadTransport	KEYWORD2
+uploadLog	KEYWORD2
 setLogSink	KEYWORD2
 onSessionBegin	KEYWORD2
 onSessionEnd	KEYWORD2

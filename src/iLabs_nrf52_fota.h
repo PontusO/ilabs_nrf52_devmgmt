@@ -28,6 +28,7 @@
 #include "ilabs_fota_transport.h"   // pluggable transport + hook typedefs
 #include "ilabs_fota_lte.h"         // ilabs_fota_result_t + orchestrator
 #include "ilabs_fota_test.h"        // ilabs_fota_test_result_t + self-test
+#include "ilabs_log_upload.h"       // ilabs_log_upload_result_t + uploader
 #include "ilabs_fota_slot.h"        // ILABS_DEVICE_TYPE, ILABS_FW_VERSION()
 #include "ilabs_fota_settings.h"    // partition map + settings struct
 #include "ilabs_fota_qspi.h"        // iLabsFotaQspi + the FotaQspi singleton
@@ -38,6 +39,7 @@
 // the headers above so the orchestrator can stay C-style internally).
 using iLabsFotaResult     = ilabs_fota_result_t;
 using iLabsFotaTestResult = ilabs_fota_test_result_t;
+using iLabsLogUploadResult = ilabs_log_upload_result_t;
 
 class iLabsFotaClass {
 public:
@@ -62,6 +64,8 @@ public:
     // ---- transport injection (register before update/self-test) ----
     void setTransport(ilabs_fota_https_get_range_fn range_get);
     void setTestTransport(ilabs_fota_https_get_fn plain_get);
+    // HTTPS POST transport for log upload (register before uploadLog).
+    void setUploadTransport(ilabs_https_post_fn post_fn);
 
     // ---- optional hooks ----
     void setLogSink(ilabs_fota_log_fn fn, void* user = nullptr);
@@ -77,6 +81,15 @@ public:
     // Transport-only pattern check (no QSPI write, no uzlib). `url` ==
     // nullptr uses the library's default pattern URL. Returns out.pass.
     bool transportSelfTest(const char* url, iLabsFotaTestResult& out);
+
+    // Compress + POST the new portion of a log to `url` (already
+    // complete, incl. any device-id path). `src` injects the log store +
+    // watermark; the POST goes through setUploadTransport(). Runs inside
+    // the caller's existing modem session (no session hooks fired). Fills
+    // `out`; returns true if anything was uploaded or there was no new
+    // data.
+    bool uploadLog(const char* url, const ilabs_log_source_t& src,
+                   iLabsLogUploadResult& out);
 
     // ---- bootloader-settings passthroughs ----
     bool triggerUpdate(uint32_t download_fw_version);

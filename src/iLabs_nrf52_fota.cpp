@@ -20,6 +20,7 @@
 // ---------------------------------------------------------------------
 static ilabs_fota_https_get_range_fn s_range_fn  = nullptr;
 static ilabs_fota_https_get_fn       s_plain_fn  = nullptr;
+static ilabs_https_post_fn           s_post_fn   = nullptr;
 
 static ilabs_fota_log_fn             s_log_fn    = nullptr;
 static void*                         s_log_user  = nullptr;
@@ -60,6 +61,15 @@ extern "C" int ilabs_fota__plain_get(const char* url,
     return s_plain_fn(url, cb, user);
 }
 
+extern "C" int ilabs_log_upload__post(const char* url,
+                                      const uint8_t* body, size_t body_len,
+                                      const char* sha256_hex,
+                                      ilabs_fota_chunk_cb_t response_cb,
+                                      void* user) {
+    if (!s_post_fn) return -1;
+    return s_post_fn(url, body, body_len, sha256_hex, response_cb, user);
+}
+
 extern "C" uint32_t ilabs_fota__device_type(void) { return s_device_type; }
 extern "C" size_t   ilabs_fota__megachunk_size(void) { return s_megachunk; }
 
@@ -93,6 +103,9 @@ void iLabsFotaClass::setTransport(ilabs_fota_https_get_range_fn range_get) {
 }
 void iLabsFotaClass::setTestTransport(ilabs_fota_https_get_fn plain_get) {
     s_plain_fn = plain_get;
+}
+void iLabsFotaClass::setUploadTransport(ilabs_https_post_fn post_fn) {
+    s_post_fn = post_fn;
 }
 
 void iLabsFotaClass::setLogSink(ilabs_fota_log_fn fn, void* user) {
@@ -128,6 +141,14 @@ bool iLabsFotaClass::transportSelfTest(const char* url, iLabsFotaTestResult& out
     ilabs_fota_test_run(u, &out);
     if (s_end_fn) s_end_fn(s_end_user);
     return out.pass;
+}
+
+bool iLabsFotaClass::uploadLog(const char* url, const ilabs_log_source_t& src,
+                               iLabsLogUploadResult& out) {
+    // No session hooks here: the upload runs inside the caller's existing
+    // modem session (the LTE task that powered + attached the modem and
+    // holds the sleep lock), unlike update() which owns its own session.
+    return ilabs_log_upload_run(url, &src, &out);
 }
 
 bool iLabsFotaClass::triggerUpdate(uint32_t download_fw_version) {

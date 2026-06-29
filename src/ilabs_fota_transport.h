@@ -58,4 +58,44 @@ typedef void (*ilabs_fota_log_fn)(int level, const char* msg, void* user);
 // for the duration of the modem session.
 typedef void (*ilabs_fota_session_fn)(void* user);
 
+// ---- Log-upload transport + source (mirror of the download side) -------
+//
+// The log-upload feature compresses + POSTs accumulated log bytes. Like
+// the download path it owns no modem driver and no log store: the byte
+// transport (POST) and the log store (read + watermark) are both
+// injected. The POST transport reuses ilabs_fota_chunk_cb_t for the
+// response body, so a sketch adapter forwarding to an existing socket
+// POST function is type-checked at the call site.
+
+// Injected HTTPS POST. `sha256_hex` (may be NULL) is sent as an integrity
+// header; `response_cb` (may be NULL) receives the response body chunks.
+// Returns the HTTP status (>=200 on a real response), 0 if no status line
+// was seen, or a negative value on a transport-level error.
+typedef int (*ilabs_https_post_fn)(const char* url,
+                                   const uint8_t* body, size_t body_len,
+                                   const char* sha256_hex,
+                                   ilabs_fota_chunk_cb_t response_cb,
+                                   void* user);
+
+// Injected log source. The library reads raw bytes and advances the
+// upload high-water through these; the actual store + persistence live in
+// the sketch (log_manager). `read` fills `buf` with up to *len_inout
+// bytes starting at `offset`, writes the count back to *len_inout, and
+// returns false on error. `total` is the current byte count on disk;
+// `uploaded` is the persisted high-water; `mark` advances it after a
+// confirmed chunk (must be monotonic + power-loss safe in the impl).
+typedef bool     (*ilabs_log_read_fn)(uint32_t offset, uint8_t* buf,
+                                      size_t* len_inout, void* user);
+typedef uint32_t (*ilabs_log_total_fn)(void* user);
+typedef uint32_t (*ilabs_log_uploaded_fn)(void* user);
+typedef void     (*ilabs_log_mark_fn)(uint32_t consumed, void* user);
+
+typedef struct {
+    ilabs_log_read_fn     read;
+    ilabs_log_total_fn    total;
+    ilabs_log_uploaded_fn uploaded;
+    ilabs_log_mark_fn     mark;
+    void*                 user;
+} ilabs_log_source_t;
+
 #endif // ILABS_FOTA_TRANSPORT_H
