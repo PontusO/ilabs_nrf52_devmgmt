@@ -30,6 +30,10 @@ network.
   up a new modem/transport.
 - Transport-agnostic log upload: gzip-frames and POSTs the new portion of a
   log in resumable chunks, advancing a watermark for power-loss safety.
+- Pull-based update check: polls a small static JSON manifest and decides
+  whether a newer image is offered for this `device_type`. The manifest is
+  a pointer only — the slot header SHA-256/`device_type`/`fw_version`
+  remain the install-time gate (no signing in this phase).
 
 ## Requirements
 
@@ -70,6 +74,20 @@ void runUpdate() {
     NVIC_SystemReset();   // bootloader applies the update on reboot
   }
 }
+
+// Pull-based check: poll the manifest, install only if it offers a newer
+// image for this device. setManifestUrl() + a plain-GET transport
+// (setTestTransport) must be registered first. `runningVersion` is the
+// caller's APP_FW_VERSION.
+void checkAndUpdate(uint32_t runningVersion) {
+  iLabsUpdateCheck chk;
+  if (FOTA.checkForUpdate(runningVersion, chk)) {   // true == newer & matching
+    iLabsFotaResult r;
+    if (FOTA.update(chk.url, r) && FOTA.triggerUpdate(r.header_fw_version)) {
+      NVIC_SystemReset();
+    }
+  }
+}
 ```
 
 See `examples/BasicFota` and `examples/TransportSelfTest`. The examples ship
@@ -77,16 +95,48 @@ with stub transports; a complete, hardware-proven Adrastea-I LTE transport
 lives in the iLabs *pingday* firmware (`fota_transport_glue.cpp`, forwarding
 to `lte_httpsGet` / `lte_httpsGetSocket`).
 
+## Update manifest
+
+`checkForUpdate()` fetches a small static JSON manifest over the plain-GET
+transport and compares it against the running version. The manifest is a
+*pointer*, not an authority — the slot header's `device_type` /
+`fw_version` / SHA-256 remain the install-time gate (no manifest/image
+signing in this phase), so it can only ever point a device at an image it
+would have accepted anyway. Decide *when* to poll (cadence, an explicit
+trigger) on the caller side; the library only does the fetch + decision.
+
+```json
+{
+  "version":     16777225,
+  "version_str": "1.0.0.9",
+  "device_type": 82,
+  "url":         "https://example.com/fw-1.0.0.9.slot.gz"
+}
+```
+
+- `version` — `(major<<24)|(minor<<16)|(patch<<8)|rev`, compared `>` the
+  running version. Decimal or `0x`-hex; field order / whitespace / extra
+  fields don't matter.
+- `device_type` — must equal the device's type (`setDeviceType()`, default
+  `ILABS_DEVICE_TYPE`); a mismatch is rejected before any download.
+- `url` — the `.slot.gz` to install.
+- `version_str` — human-facing only (optional).
+
+`checkForUpdate()` returns true only when a newer, matching image is
+offered (`out.update_available`); the caller then runs `update(out.url, …)`.
+`out.status` carries the diagnostic outcome either way.
+
 ## Injection points
 
 | What | How | Default |
 |---|---|---|
 | Ranged HTTPS GET (firmware) | `setTransport()` | none (required) |
-| Plain HTTPS GET (self-test) | `setTestTransport()` | none |
+| Plain HTTPS GET (self-test + update check) | `setTestTransport()` | none |
 | HTTPS POST (log upload) | `setUploadTransport()` | none |
 | Log output | `setLogSink()` | dropped silently |
 | Session begin/end | `onSessionBegin()` / `onSessionEnd()` | no-op |
 | Firmware URL | `setFirmwareUrl()` | none |
+| Manifest URL (update check) | `setManifestUrl()` | none |
 | Device type | `setDeviceType()` | `ILABS_DEVICE_TYPE` (0x0052) |
 | Megachunk size | `setMegachunkSize()` | 100 KiB |
 

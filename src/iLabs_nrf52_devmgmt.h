@@ -30,6 +30,7 @@
 #include "ilabs_fota_lte.h"         // ilabs_fota_result_t + orchestrator
 #include "ilabs_fota_test.h"        // ilabs_fota_test_result_t + self-test
 #include "ilabs_log_upload.h"       // ilabs_log_upload_result_t + uploader
+#include "ilabs_fota_manifest.h"    // update-check manifest type + parser
 #include "ilabs_fota_slot.h"        // ILABS_DEVICE_TYPE, ILABS_FW_VERSION()
 #include "ilabs_fota_settings.h"    // partition map + settings struct
 #include "ilabs_fota_qspi.h"        // iLabsFotaQspi + the FotaQspi singleton
@@ -41,6 +42,7 @@
 using iLabsFotaResult     = ilabs_fota_result_t;
 using iLabsFotaTestResult = ilabs_fota_test_result_t;
 using iLabsLogUploadResult = ilabs_log_upload_result_t;
+using iLabsUpdateCheck     = ilabs_fota_update_check_t;
 
 class iLabsFotaClass {
 public:
@@ -56,6 +58,8 @@ public:
     // ---- configuration ----
     // Default firmware URL, used by update() when called without one.
     void setFirmwareUrl(const char* url);
+    // URL of the static update-check manifest polled by checkForUpdate().
+    void setManifestUrl(const char* url);
     // Override the device_type the slot header is validated against.
     // Defaults to ILABS_DEVICE_TYPE (0x0052).
     void setDeviceType(uint32_t dev_type);
@@ -82,6 +86,15 @@ public:
     // Transport-only pattern check (no QSPI write, no uzlib). `url` ==
     // nullptr uses the library's default pattern URL. Returns out.pass.
     bool transportSelfTest(const char* url, iLabsFotaTestResult& out);
+
+    // Poll the configured manifest URL (setManifestUrl) over the plain-GET
+    // transport and decide whether a newer image is offered for this
+    // device. `current_fw_version` is the running firmware version word
+    // (the caller's APP_FW_VERSION). Fills `out` with the manifest details
+    // + a diagnostic status; returns true ONLY when out.update_available
+    // (manifest device_type matches and version > current). The caller
+    // then runs update(out.url, ...). No QSPI write, no session hooks.
+    bool checkForUpdate(uint32_t current_fw_version, iLabsUpdateCheck& out);
 
     // Compress + POST the new portion of a log to `url` (already
     // complete, incl. any device-id path). `src` injects the log store +

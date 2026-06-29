@@ -11,6 +11,7 @@ iLabsFotaQspi	KEYWORD1
 iLabsFotaResult	KEYWORD1
 iLabsFotaTestResult	KEYWORD1
 iLabsLogUploadResult	KEYWORD1
+iLabsUpdateCheck	KEYWORD1
 
 #######################################
 # Methods and functions (KEYWORD2)
@@ -20,6 +21,8 @@ suspend	KEYWORD2
 resume	KEYWORD2
 ready	KEYWORD2
 setFirmwareUrl	KEYWORD2
+setManifestUrl	KEYWORD2
+checkForUpdate	KEYWORD2
 setDeviceType	KEYWORD2
 setMegachunkSize	KEYWORD2
 setTransport	KEYWORD2

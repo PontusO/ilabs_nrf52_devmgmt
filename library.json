@@ -1,7 +1,7 @@
 {
   "name": "iLabs nRF52 Device Management",
-  "version": "0.3.0",
-  "description": "Device management for nRF52 devices with external QSPI flash: LTE/HTTPS firmware-over-the-air updates plus transport-agnostic log upload. FOTA downloads a gzip-compressed firmware slot image over a caller-supplied HTTPS transport, stream-stages it into a QSPI download partition, verifies SHA-256 against the slot header, and arms the Adafruit-fork bootloader settings block. The log uploader compresses and POSTs accumulated log bytes in resumable chunks. Modem-agnostic: transport and system couplings are injected.",
+  "version": "0.4.0",
+  "description": "Device management for nRF52 devices with external QSPI flash: LTE/HTTPS firmware-over-the-air updates plus transport-agnostic log upload. FOTA downloads a gzip-compressed firmware slot image over a caller-supplied HTTPS transport, stream-stages it into a QSPI download partition, verifies SHA-256 against the slot header, and arms the Adafruit-fork bootloader settings block. An update-check polls a small static JSON manifest and decides whether a newer image is offered for the device. The log uploader compresses and POSTs accumulated log bytes in resumable chunks. Modem-agnostic: transport and system couplings are injected.",
   "keywords": "devmgmt, fota, firmware, ota, update, nrf52, lte, qspi, logs, telemetry",
   "repository": {
     "type": "git",

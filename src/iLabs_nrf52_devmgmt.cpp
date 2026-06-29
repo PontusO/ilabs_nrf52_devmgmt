@@ -31,6 +31,7 @@ static ilabs_fota_session_fn         s_end_fn    = nullptr;
 static void*                         s_end_user  = nullptr;
 
 static char     s_url[256]     = { 0 };
+static char     s_manifest_url[ILABS_FOTA_URL_MAX] = { 0 };
 static uint32_t s_device_type  = ILABS_DEVICE_TYPE;
 static size_t   s_megachunk    = 100 * 1024;
 
@@ -92,6 +93,12 @@ void iLabsFotaClass::setFirmwareUrl(const char* url) {
     s_url[sizeof(s_url) - 1] = '\0';
 }
 
+void iLabsFotaClass::setManifestUrl(const char* url) {
+    if (!url) { s_manifest_url[0] = '\0'; return; }
+    strncpy(s_manifest_url, url, sizeof(s_manifest_url) - 1);
+    s_manifest_url[sizeof(s_manifest_url) - 1] = '\0';
+}
+
 void iLabsFotaClass::setDeviceType(uint32_t dev_type) { s_device_type = dev_type; }
 
 void iLabsFotaClass::setMegachunkSize(size_t bytes) {
@@ -141,6 +148,91 @@ bool iLabsFotaClass::transportSelfTest(const char* url, iLabsFotaTestResult& out
     ilabs_fota_test_run(u, &out);
     if (s_end_fn) s_end_fn(s_end_user);
     return out.pass;
+}
+
+// Update-check manifest fetch. The manifest is a handful of small fields;
+// 512 B comfortably exceeds a well-formed document. We retain only the
+// first 512 B and keep draining the body (return true) so the transport
+// closes cleanly even if the server sends a trailing newline / extra.
+namespace {
+struct ManifestFetchCtx {
+    char   buf[512];
+    size_t len;
+};
+}  // namespace
+
+static bool manifestFetchCb(const uint8_t* chunk, size_t chunk_len,
+                            size_t total_received, size_t content_length,
+                            void* user) {
+    (void)total_received; (void)content_length;
+    ManifestFetchCtx* c = static_cast<ManifestFetchCtx*>(user);
+    size_t room = sizeof(c->buf) - c->len;
+    size_t take = chunk_len < room ? chunk_len : room;
+    if (take) { memcpy(c->buf + c->len, chunk, take); c->len += take; }
+    return true;
+}
+
+bool iLabsFotaClass::checkForUpdate(uint32_t current_fw_version,
+                                    iLabsUpdateCheck& out) {
+    memset(&out, 0, sizeof(out));
+
+    if (!s_plain_fn) {
+        out.status = ILABS_FOTA_CHECK_NO_TRANSPORT;
+        ilabs_fota__logf(3, "[fota-chk] no GET transport registered");
+        return false;
+    }
+    if (!s_manifest_url[0]) {
+        out.status = ILABS_FOTA_CHECK_HTTP_FAIL;
+        ilabs_fota__logf(3, "[fota-chk] no manifest URL configured");
+        return false;
+    }
+
+    ManifestFetchCtx ctx;
+    ctx.len = 0;
+    int http = s_plain_fn(s_manifest_url, manifestFetchCb, &ctx);
+    out.http_status = http;
+    if (http < 200 || http >= 300) {
+        out.status = ILABS_FOTA_CHECK_HTTP_FAIL;
+        ilabs_fota__logf(3, "[fota-chk] manifest GET failed (status %d)", http);
+        return false;
+    }
+
+    ilabs_fota_manifest_t m;
+    if (ilabs_fota_manifest_parse(ctx.buf, ctx.len, &m) != 0) {
+        out.status = ILABS_FOTA_CHECK_PARSE_FAIL;
+        ilabs_fota__logf(3, "[fota-chk] manifest parse failed (%u B)",
+                         (unsigned)ctx.len);
+        return false;
+    }
+
+    out.version     = m.version;
+    out.device_type = m.device_type;
+    memcpy(out.version_str, m.version_str, sizeof(out.version_str));
+    memcpy(out.url, m.url, sizeof(out.url));
+
+    if (m.device_type != s_device_type) {
+        out.status = ILABS_FOTA_CHECK_WRONG_DEVICE;
+        ilabs_fota__logf(2, "[fota-chk] device_type 0x%04lX != mine 0x%04lX",
+                         (unsigned long)m.device_type,
+                         (unsigned long)s_device_type);
+        return false;
+    }
+
+    if (m.version <= current_fw_version) {
+        out.status = ILABS_FOTA_CHECK_UP_TO_DATE;
+        ilabs_fota__logf(1, "[fota-chk] up to date (have 0x%08lX, offered 0x%08lX)",
+                         (unsigned long)current_fw_version,
+                         (unsigned long)m.version);
+        return false;
+    }
+
+    out.update_available = true;
+    out.status = ILABS_FOTA_CHECK_UPDATE_AVAILABLE;
+    ilabs_fota__logf(1, "[fota-chk] update available 0x%08lX -> 0x%08lX (%s)",
+                     (unsigned long)current_fw_version,
+                     (unsigned long)m.version,
+                     m.version_str[0] ? m.version_str : "?");
+    return true;
 }
 
 bool iLabsFotaClass::uploadLog(const char* url, const ilabs_log_source_t& src,
