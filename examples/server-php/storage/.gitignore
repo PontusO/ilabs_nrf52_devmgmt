@@ -1,0 +1,5 @@
+# Uploaded log artifacts are runtime data, not source.
+# Keep the directory + its deny-all .htaccess, ignore everything else.
+*
+!.gitignore
+!.htaccess

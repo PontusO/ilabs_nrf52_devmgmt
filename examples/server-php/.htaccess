@@ -1,0 +1,25 @@
+# iLabs log-upload endpoint URL routing.
+#
+# Maps  POST /files/<product>/logs/{deveui}
+# to    POST /files/<product>/logs/index.php
+# with the deveui still visible to index.php via $_SERVER['REQUEST_URI'].
+#
+# Drop this file alongside index.php. Requires mod_rewrite enabled on
+# the host (one.com enables it by default for shared hosting).
+
+RewriteEngine On
+
+# If the request is exactly /logs/{16-hex} (no trailing slash, no extra
+# segments), internally rewrite to index.php. The original URI stays
+# in $_SERVER['REQUEST_URI'] so the PHP handler can still pull the
+# deveui out of the path.
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^([0-9A-Fa-f]{16})/?$ index.php [L,QSA]
+
+# Reject everything else under this directory tree -- only index.php
+# and /{deveui} are valid endpoints. Anything else returns 404.
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_URI} !/index\.php$
+RewriteRule .* - [R=404,L]

@@ -1,0 +1,7 @@
+# Block all public access to the log storage directory.
+#
+# The directory sits inside the web root so the PHP uploader can write
+# to it without sudo, but the contents are sensitive (device logs from
+# customer field units) and must NEVER be browsable. Apache 2.4 syntax.
+
+Require all denied
