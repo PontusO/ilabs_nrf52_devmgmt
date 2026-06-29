@@ -1,9 +1,10 @@
-// iLabs nRF52 FOTA -- public umbrella header.
+// iLabs nRF52 Device Management -- public umbrella header.
 //
-// One include for sketches: `#include <iLabs_nrf52_fota.h>`. Exposes the
-// iLabsFotaClass singleton `FOTA`, which orchestrates an LTE (or any
+// One include for sketches: `#include <iLabs_nrf52_devmgmt.h>`. Exposes
+// the iLabsFotaClass singleton `FOTA`, which orchestrates an LTE (or any
 // other) HTTPS firmware-over-the-air update for nRF52 devices with an
-// external QSPI flash and an Adafruit-fork bootloader.
+// external QSPI flash and an Adafruit-fork bootloader, plus a
+// transport-agnostic log-upload path (uploadLog).
 //
 // Architecture: the library owns the FOTA pipeline -- download a
 // gzip'd "slot" image, stream-inflate it, stage it into the QSPI
@@ -19,8 +20,8 @@
 // constants, never runtime-settable -- a mismatch with the bootloader
 // would brick the swap.
 
-#ifndef ILABS_NRF52_FOTA_H
-#define ILABS_NRF52_FOTA_H
+#ifndef ILABS_NRF52_DEVMGMT_H
+#define ILABS_NRF52_DEVMGMT_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -103,4 +104,4 @@ public:
 // Pre-instantiated singleton, iLabs convention (cf. Adafruit `flash`).
 extern iLabsFotaClass FOTA;
 
-#endif // ILABS_NRF52_FOTA_H
+#endif // ILABS_NRF52_DEVMGMT_H

@@ -14,7 +14,7 @@
  * stub, this sketch compiles and runs but every update fails fast.
  */
 
-#include <iLabs_nrf52_fota.h>
+#include <iLabs_nrf52_devmgmt.h>
 
 // ---- 1. HTTPS transport: closed-range GET (replace body w/ your modem) ----
 static int fotaRangeGet(const char* url, size_t off, size_t end,

@@ -1,15 +1,18 @@
-# iLabs nRF52 FOTA
+# iLabs nRF52 Device Management
 
-Firmware-over-the-air updates for nRF52 devices with an external QSPI flash
-and an Adafruit-fork bootloader.
+Device-management services for nRF52 devices with an external QSPI flash
+and an Adafruit-fork bootloader: firmware-over-the-air (FOTA) updates and
+transport-agnostic log upload.
 
 The library owns the FOTA pipeline — download a gzip-compressed firmware
 *slot* image over HTTPS, stream-inflate it, stage it into the QSPI download
 partition, verify SHA-256 against the slot header, and arm the bootloader
-settings block so the new image is applied on the next reboot. It is
-**modem-agnostic**: the byte transport and every system coupling (logging,
-sleep, radio coexistence) are injected, so the same library drops into any
-nRF52 product regardless of how it reaches the network.
+settings block so the new image is applied on the next reboot. It also
+provides a log uploader that compresses and POSTs accumulated log bytes in
+resumable chunks. It is **modem-agnostic**: the byte transport and every
+system coupling (logging, sleep, radio coexistence) are injected, so the
+same library drops into any nRF52 product regardless of how it reaches the
+network.
 
 ## Features
 
@@ -25,6 +28,8 @@ nRF52 product regardless of how it reaches the network.
   + rollback bookkeeping.
 - A transport self-test mode (pattern verify, no flash write) for bringing
   up a new modem/transport.
+- Transport-agnostic log upload: gzip-frames and POSTs the new portion of a
+  log in resumable chunks, advancing a watermark for power-loss safety.
 
 ## Requirements
 
@@ -43,7 +48,7 @@ release zip via *Sketch → Include Library → Add .ZIP Library*.
 ## Usage
 
 ```cpp
-#include <iLabs_nrf52_fota.h>
+#include <iLabs_nrf52_devmgmt.h>
 
 // 1. Provide an HTTPS byte transport (forward to your modem driver).
 static int rangeGet(const char* url, size_t off, size_t end,
@@ -78,6 +83,7 @@ to `lte_httpsGet` / `lte_httpsGetSocket`).
 |---|---|---|
 | Ranged HTTPS GET (firmware) | `setTransport()` | none (required) |
 | Plain HTTPS GET (self-test) | `setTestTransport()` | none |
+| HTTPS POST (log upload) | `setUploadTransport()` | none |
 | Log output | `setLogSink()` | dropped silently |
 | Session begin/end | `onSessionBegin()` / `onSessionEnd()` | no-op |
 | Firmware URL | `setFirmwareUrl()` | none |

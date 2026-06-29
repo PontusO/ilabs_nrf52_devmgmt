@@ -13,7 +13,7 @@
  * lte_httpsGetSocket).
  */
 
-#include <iLabs_nrf52_fota.h>
+#include <iLabs_nrf52_devmgmt.h>
 
 // Plain (non-ranged) HTTPS GET. Return the HTTP status, negative on error.
 static int fotaPlainGet(const char* url, ilabs_fota_chunk_cb_t cb, void* user) {

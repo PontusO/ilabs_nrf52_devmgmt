@@ -1,4 +1,4 @@
-// iLabs nRF52 FOTA -- iLabsFotaClass implementation + internal bridges.
+// iLabs nRF52 Device Management -- iLabsFotaClass implementation + bridges.
 //
 // Holds the registered transport / log / session hooks and the runtime
 // configuration as file-scope state, exposes them to the C-style
@@ -6,7 +6,7 @@
 // declared in ilabs_fota_internal.h, and provides the C++ class methods
 // the sketch uses.
 
-#include "iLabs_nrf52_fota.h"
+#include "iLabs_nrf52_devmgmt.h"
 #include "ilabs_fota_internal.h"
 
 #include <stdarg.h>

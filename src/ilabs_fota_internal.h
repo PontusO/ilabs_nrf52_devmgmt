@@ -3,7 +3,7 @@
 // C-linkage bridges that let the extracted C-style orchestrator
 // (ilabs_fota_lte.cpp) and the transport self-test (ilabs_fota_test.cpp)
 // reach the registered transport + log sink that the C++ iLabsFotaClass
-// owns. Implemented in iLabs_nrf52_fota.cpp. Sketch code never includes
+// owns. Implemented in iLabs_nrf52_devmgmt.cpp. Sketch code never includes
 // this header -- it uses the iLabsFotaClass setters instead.
 
 #ifndef ILABS_FOTA_INTERNAL_H
