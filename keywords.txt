@@ -7,6 +7,8 @@
 #######################################
 FOTA	KEYWORD1
 iLabsFotaClass	KEYWORD1
+iLabsDevMgmt	KEYWORD1
+DevMgmt	KEYWORD1
 iLabsFotaQspi	KEYWORD1
 iLabsFotaResult	KEYWORD1
 iLabsFotaTestResult	KEYWORD1
@@ -35,7 +37,6 @@ onSessionEnd	KEYWORD2
 update	KEYWORD2
 transportSelfTest	KEYWORD2
 triggerUpdate	KEYWORD2
-confirmBoot	KEYWORD2
 readSettings	KEYWORD2
 qspi	KEYWORD2
 

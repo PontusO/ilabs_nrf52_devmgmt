@@ -71,6 +71,18 @@ typedef void (*ilabs_fota_session_fn)(void* user);
 // header; `response_cb` (may be NULL) receives the response body chunks.
 // Returns the HTTP status (>=200 on a real response), 0 if no status line
 // was seen, or a negative value on a transport-level error.
+//
+// DELIVERY CONTRACT (load-bearing -- read before writing a transport):
+// the library RETRIES the same body whenever this returns <= 0. Therefore
+// a return <= 0 is a promise that the request was DEFINITELY NOT delivered
+// to the server. If the underlying stack can accept-and-execute a request
+// while still reporting a local error (the Adrastea AT%HTTPSEND does
+// exactly this), the transport MUST resolve the ambiguity itself -- e.g.
+// wait for the modem's completion URC as ground truth -- before returning
+// <= 0. Returning <= 0 for a request that was actually delivered causes a
+// duplicate POST of the same bytes (for log upload: a duplicated gzip
+// member in the server archive). If a transport cannot guarantee this,
+// it must either return the real status or accept that duplicates occur.
 typedef int (*ilabs_https_post_fn)(const char* url,
                                    const uint8_t* body, size_t body_len,
                                    const char* sha256_hex,
@@ -95,6 +107,15 @@ typedef struct {
     ilabs_log_total_fn    total;
     ilabs_log_uploaded_fn uploaded;
     ilabs_log_mark_fn     mark;
+    // Optional (may be NULL) snapshot lifecycle. `begin` fires once before
+    // the first read; the store should freeze what's uploadable now (e.g.
+    // rotate to a fresh file so live logging can't mutate or prune the
+    // bytes being read) so `total`/`read` see a stable snapshot for the
+    // whole run. `end` fires once after the last chunk (success OR
+    // failure) to release the freeze. Stores that are naturally stable
+    // during an upload can leave both NULL.
+    ilabs_fota_session_fn begin;
+    ilabs_fota_session_fn end;
     void*                 user;
 } ilabs_log_source_t;
 

@@ -21,6 +21,7 @@
 static ilabs_fota_https_get_range_fn s_range_fn  = nullptr;
 static ilabs_fota_https_get_fn       s_plain_fn  = nullptr;
 static ilabs_https_post_fn           s_post_fn   = nullptr;
+static size_t                        s_post_max  = 0;   // per-request body cap
 
 static ilabs_fota_log_fn             s_log_fn    = nullptr;
 static void*                         s_log_user  = nullptr;
@@ -62,6 +63,10 @@ extern "C" int ilabs_fota__plain_get(const char* url,
     return s_plain_fn(url, cb, user);
 }
 
+extern "C" size_t ilabs_log_upload__max_body(void) {
+    return s_post_max;
+}
+
 extern "C" int ilabs_log_upload__post(const char* url,
                                       const uint8_t* body, size_t body_len,
                                       const char* sha256_hex,
@@ -77,55 +82,57 @@ extern "C" size_t   ilabs_fota__megachunk_size(void) { return s_megachunk; }
 // ---------------------------------------------------------------------
 // iLabsFotaClass methods.
 // ---------------------------------------------------------------------
-bool iLabsFotaClass::begin() {
+bool iLabsDevMgmt::begin() {
     bool ok = FotaQspi.begin();
     ilabs_fota_gunzip_init();
     return ok;
 }
 
-void iLabsFotaClass::suspend()       { FotaQspi.suspend(); }
-void iLabsFotaClass::resume()        { FotaQspi.resume(); }
-bool iLabsFotaClass::ready() const   { return FotaQspi.ready(); }
+void iLabsDevMgmt::suspend()       { FotaQspi.suspend(); }
+void iLabsDevMgmt::resume()        { FotaQspi.resume(); }
+bool iLabsDevMgmt::ready() const   { return FotaQspi.ready(); }
 
-void iLabsFotaClass::setFirmwareUrl(const char* url) {
+void iLabsDevMgmt::setFirmwareUrl(const char* url) {
     if (!url) { s_url[0] = '\0'; return; }
     strncpy(s_url, url, sizeof(s_url) - 1);
     s_url[sizeof(s_url) - 1] = '\0';
 }
 
-void iLabsFotaClass::setManifestUrl(const char* url) {
+void iLabsDevMgmt::setManifestUrl(const char* url) {
     if (!url) { s_manifest_url[0] = '\0'; return; }
     strncpy(s_manifest_url, url, sizeof(s_manifest_url) - 1);
     s_manifest_url[sizeof(s_manifest_url) - 1] = '\0';
 }
 
-void iLabsFotaClass::setDeviceType(uint32_t dev_type) { s_device_type = dev_type; }
+void iLabsDevMgmt::setDeviceType(uint32_t dev_type) { s_device_type = dev_type; }
 
-void iLabsFotaClass::setMegachunkSize(size_t bytes) {
+void iLabsDevMgmt::setMegachunkSize(size_t bytes) {
     if (bytes) s_megachunk = bytes;
 }
 
-void iLabsFotaClass::setTransport(ilabs_fota_https_get_range_fn range_get) {
+void iLabsDevMgmt::setTransport(ilabs_fota_https_get_range_fn range_get) {
     s_range_fn = range_get;
 }
-void iLabsFotaClass::setTestTransport(ilabs_fota_https_get_fn plain_get) {
+void iLabsDevMgmt::setTestTransport(ilabs_fota_https_get_fn plain_get) {
     s_plain_fn = plain_get;
 }
-void iLabsFotaClass::setUploadTransport(ilabs_https_post_fn post_fn) {
-    s_post_fn = post_fn;
+void iLabsDevMgmt::setUploadTransport(ilabs_https_post_fn post_fn,
+                                       size_t max_body_bytes) {
+    s_post_fn  = post_fn;
+    s_post_max = max_body_bytes;
 }
 
-void iLabsFotaClass::setLogSink(ilabs_fota_log_fn fn, void* user) {
+void iLabsDevMgmt::setLogSink(ilabs_fota_log_fn fn, void* user) {
     s_log_fn = fn; s_log_user = user;
 }
-void iLabsFotaClass::onSessionBegin(ilabs_fota_session_fn fn, void* user) {
+void iLabsDevMgmt::onSessionBegin(ilabs_fota_session_fn fn, void* user) {
     s_begin_fn = fn; s_begin_user = user;
 }
-void iLabsFotaClass::onSessionEnd(ilabs_fota_session_fn fn, void* user) {
+void iLabsDevMgmt::onSessionEnd(ilabs_fota_session_fn fn, void* user) {
     s_end_fn = fn; s_end_user = user;
 }
 
-bool iLabsFotaClass::update(const char* url, iLabsFotaResult& out) {
+bool iLabsDevMgmt::update(const char* url, iLabsFotaResult& out) {
     const char* u = url ? url : (s_url[0] ? s_url : nullptr);
     if (!u) {
         memset(&out, 0, sizeof(out));
@@ -138,11 +145,11 @@ bool iLabsFotaClass::update(const char* url, iLabsFotaResult& out) {
     return ok;
 }
 
-bool iLabsFotaClass::update(iLabsFotaResult& out) {
+bool iLabsDevMgmt::update(iLabsFotaResult& out) {
     return update(nullptr, out);
 }
 
-bool iLabsFotaClass::transportSelfTest(const char* url, iLabsFotaTestResult& out) {
+bool iLabsDevMgmt::transportSelfTest(const char* url, iLabsFotaTestResult& out) {
     const char* u = url ? url : ilabs_fota_test_url();
     if (s_begin_fn) s_begin_fn(s_begin_user);
     ilabs_fota_test_run(u, &out);
@@ -172,13 +179,13 @@ static bool manifestFetchCb(const uint8_t* chunk, size_t chunk_len,
     return true;
 }
 
-bool iLabsFotaClass::checkForUpdate(uint32_t current_fw_version,
+bool iLabsDevMgmt::checkForUpdate(uint32_t current_fw_version,
                                     iLabsUpdateCheck& out) {
     memset(&out, 0, sizeof(out));
 
-    if (!s_plain_fn) {
+    if (!s_range_fn) {
         out.status = ILABS_FOTA_CHECK_NO_TRANSPORT;
-        ilabs_fota__logf(3, "[fota-chk] no GET transport registered");
+        ilabs_fota__logf(3, "[fota-chk] no ranged GET transport registered");
         return false;
     }
     if (!s_manifest_url[0]) {
@@ -189,7 +196,15 @@ bool iLabsFotaClass::checkForUpdate(uint32_t current_fw_version,
 
     ManifestFetchCtx ctx;
     ctx.len = 0;
-    int http = s_plain_fn(s_manifest_url, manifestFetchCb, &ctx);
+    // Fetch via the ranged (HTTPCMD) transport -- the SAME reliable path the
+    // firmware download uses -- not a plain socket GET. On Adrastea-I the raw
+    // socket GET hangs when the whole small response arrives as one unsolicited
+    // %SOCKETDATA URC. A bounded range (0 .. buf-1) also makes the modem strip
+    // the HTTP headers, so the callback gets clean JSON body. The manifest is a
+    // few hundred bytes; the range cap equals the fetch buffer. A small file
+    // returns 206 Partial (or 200) -- both pass the 2xx check below.
+    int http = s_range_fn(s_manifest_url, 0, sizeof(ctx.buf) - 1,
+                          manifestFetchCb, &ctx);
     out.http_status = http;
     if (http < 200 || http >= 300) {
         out.status = ILABS_FOTA_CHECK_HTTP_FAIL;
@@ -235,7 +250,7 @@ bool iLabsFotaClass::checkForUpdate(uint32_t current_fw_version,
     return true;
 }
 
-bool iLabsFotaClass::uploadLog(const char* url, const ilabs_log_source_t& src,
+bool iLabsDevMgmt::uploadLog(const char* url, const ilabs_log_source_t& src,
                                iLabsLogUploadResult& out) {
     // No session hooks here: the upload runs inside the caller's existing
     // modem session (the LTE task that powered + attached the modem and
@@ -243,17 +258,15 @@ bool iLabsFotaClass::uploadLog(const char* url, const ilabs_log_source_t& src,
     return ilabs_log_upload_run(url, &src, &out);
 }
 
-bool iLabsFotaClass::triggerUpdate(uint32_t download_fw_version) {
+bool iLabsDevMgmt::triggerUpdate(uint32_t download_fw_version) {
     return FotaQspi.triggerUpdate(download_fw_version);
 }
-bool iLabsFotaClass::confirmBoot(uint32_t current_app_fw_version) {
-    return FotaQspi.confirmBoot(current_app_fw_version);
-}
-bool iLabsFotaClass::readSettings(ilabs_fota_settings_t& out) const {
+bool iLabsDevMgmt::readSettings(ilabs_fota_settings_t& out) const {
     return FotaQspi.readSettings(&out);
 }
 
-iLabsFotaQspi& iLabsFotaClass::qspi() { return FotaQspi; }
+iLabsFotaQspi& iLabsDevMgmt::qspi() { return FotaQspi; }
 
 // Pre-instantiated singleton.
-iLabsFotaClass FOTA;
+iLabsDevMgmt DevMgmt;
+iLabsDevMgmt& FOTA = DevMgmt;   // legacy alias (pre-0.5.0 sketches)

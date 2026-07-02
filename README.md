@@ -65,7 +65,6 @@ void setup() {
   FOTA.setFirmwareUrl("https://example.com/firmware.slot.gz");
   FOTA.setDeviceType(ILABS_DEVICE_TYPE);
   FOTA.begin();
-  FOTA.confirmBoot(ILABS_FW_VERSION(1, 0, 0, 0));   // running image is healthy
 }
 
 void runUpdate() {
@@ -76,8 +75,8 @@ void runUpdate() {
 }
 
 // Pull-based check: poll the manifest, install only if it offers a newer
-// image for this device. setManifestUrl() + a plain-GET transport
-// (setTestTransport) must be registered first. `runningVersion` is the
+// image for this device. setManifestUrl() + the ranged transport
+// (setTransport) must be registered first. `runningVersion` is the
 // caller's APP_FW_VERSION.
 void checkAndUpdate(uint32_t runningVersion) {
   iLabsUpdateCheck chk;
@@ -97,8 +96,10 @@ to `lte_httpsGet` / `lte_httpsGetSocket`).
 
 ## Update manifest
 
-`checkForUpdate()` fetches a small static JSON manifest over the plain-GET
-transport and compares it against the running version. The manifest is a
+`checkForUpdate()` fetches a small static JSON manifest over the **ranged**
+transport (`setTransport` — the same reliable path the download uses; a small
+bounded range pulls the whole manifest) and compares it against the running
+version. The manifest is a
 *pointer*, not an authority — the slot header's `device_type` /
 `fw_version` / SHA-256 remain the install-time gate (no manifest/image
 signing in this phase), so it can only ever point a device at an image it
@@ -130,8 +131,8 @@ offered (`out.update_available`); the caller then runs `update(out.url, …)`.
 
 | What | How | Default |
 |---|---|---|
-| Ranged HTTPS GET (firmware) | `setTransport()` | none (required) |
-| Plain HTTPS GET (self-test + update check) | `setTestTransport()` | none |
+| Ranged HTTPS GET (firmware + update check) | `setTransport()` | none (required) |
+| Plain HTTPS GET (self-test) | `setTestTransport()` | none |
 | HTTPS POST (log upload) | `setUploadTransport()` | none |
 | Log output | `setLogSink()` | dropped silently |
 | Session begin/end | `onSessionBegin()` / `onSessionEnd()` | no-op |

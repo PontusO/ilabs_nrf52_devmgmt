@@ -1,19 +1,36 @@
 // iLabs nRF52 Device Management -- public umbrella header.
 //
 // One include for sketches: `#include <iLabs_nrf52_devmgmt.h>`. Exposes
-// the iLabsFotaClass singleton `FOTA`, which orchestrates an LTE (or any
-// other) HTTPS firmware-over-the-air update for nRF52 devices with an
-// external QSPI flash and an Adafruit-fork bootloader, plus a
-// transport-agnostic log-upload path (uploadLog).
+// the iLabsDevMgmt singleton `DevMgmt` (legacy aliases `iLabsFotaClass` /
+// `FOTA` are kept for source compatibility), which orchestrates an LTE
+// (or any other) HTTPS firmware-over-the-air update for nRF52 devices
+// with an external QSPI flash and an Adafruit-fork bootloader, plus a
+// transport-agnostic log-upload path (uploadLog) and a pull-based
+// update check (checkForUpdate).
 //
 // Architecture: the library owns the FOTA pipeline -- download a
 // gzip'd "slot" image, stream-inflate it, stage it into the QSPI
 // download partition, verify SHA-256 against the slot header, and arm
 // the bootloader settings block. It does NOT own a modem driver: the
-// byte transport is injected (setTransport / setTestTransport) and all
-// project couplings (logging, sleep locks, LoRa disable) are injected
-// hooks. See ilabs_fota_transport.h for the function-pointer types and
-// the examples/ directory for an Adrastea-I wiring.
+// byte transport is injected (setTransport / setTestTransport /
+// setUploadTransport) and all project couplings (logging, sleep locks,
+// LoRa disable) are injected hooks. See ilabs_fota_transport.h for the
+// function-pointer types -- INCLUDING the POST delivery contract that
+// transports must honour -- and the examples/ directory for an
+// Adrastea-I wiring.
+//
+// Retry ownership map (who retries what -- keep it this way, stacking
+// another retry layer multiplies attempts):
+//   - THIS LIBRARY retries a log-upload POST (POST_MAX_ATTEMPTS) when the
+//     transport reports "definitely not delivered" (status <= 0), and
+//     walks the FOTA megachunk loop; it never retries a delivered
+//     request.
+//   - THE TRANSPORT owns resolving link-level ambiguity (e.g. waiting
+//     for the modem's completion URC before declaring failure) and any
+//     single-request pacing/timeouts. It does NOT re-send bodies.
+//   - THE APPLICATION owns session-level retry (re-triggering a whole
+//     upload/update on a later wake); it does not retry individual
+//     requests.
 //
 // QSPI partition addresses are a fixed contract with the bootloader
 // (ilabs_fota_settings.h / ilabs_fota_slot.h). They are compile-time
@@ -44,7 +61,7 @@ using iLabsFotaTestResult = ilabs_fota_test_result_t;
 using iLabsLogUploadResult = ilabs_log_upload_result_t;
 using iLabsUpdateCheck     = ilabs_fota_update_check_t;
 
-class iLabsFotaClass {
+class iLabsDevMgmt {
 public:
     // ---- lifecycle ----
     // Bring up the QSPI staging layer and uzlib tables. Returns true if
@@ -70,10 +87,27 @@ public:
     void setTransport(ilabs_fota_https_get_range_fn range_get);
     void setTestTransport(ilabs_fota_https_get_fn plain_get);
     // HTTPS POST transport for log upload (register before uploadLog).
-    void setUploadTransport(ilabs_https_post_fn post_fn);
+    // `max_body_bytes` is the transport's per-request body cap; the log
+    // uploader sizes every compressed gzip member to fit it (this is how
+    // e.g. the Adrastea %HTTPSEND 750-byte effective limit propagates --
+    // declare it HERE, in one place, instead of duplicating the constant
+    // in the library). Values below the compressor's worst-case floor
+    // (~600 B) are clamped up to it.
+    void setUploadTransport(ilabs_https_post_fn post_fn,
+                            size_t max_body_bytes);
 
     // ---- optional hooks ----
     void setLogSink(ilabs_fota_log_fn fn, void* user = nullptr);
+    // Session hooks, fired ONLY by update() around the whole OTA (begin
+    // before the first transport call, end after the last QSPI/commit
+    // step, success or failure). They exist for sketches that want the
+    // LIBRARY to drive session bring-up/teardown (radio arbitration,
+    // sleep locks). A sketch that orchestrates sessions EXTERNALLY (owns
+    // the modem task and calls update()/uploadLog() from inside its own
+    // session -- the pingday model) simply leaves them unregistered;
+    // uploadLog()/checkForUpdate() never fire them either way. Note this
+    // is a different concept from ilabs_log_source_t's begin/end, which
+    // freeze the LOG STORE snapshot, not the link session.
     void onSessionBegin(ilabs_fota_session_fn fn, void* user = nullptr);
     void onSessionEnd(ilabs_fota_session_fn fn, void* user = nullptr);
 
@@ -87,9 +121,11 @@ public:
     // nullptr uses the library's default pattern URL. Returns out.pass.
     bool transportSelfTest(const char* url, iLabsFotaTestResult& out);
 
-    // Poll the configured manifest URL (setManifestUrl) over the plain-GET
-    // transport and decide whether a newer image is offered for this
-    // device. `current_fw_version` is the running firmware version word
+    // Poll the configured manifest URL (setManifestUrl) over the ranged
+    // (setTransport) transport -- the same reliable path update() uses; a
+    // small bounded range fetches the whole manifest -- and decide whether a
+    // newer image is offered for this device. `current_fw_version` is the
+    // running firmware version word
     // (the caller's APP_FW_VERSION). Fills `out` with the manifest details
     // + a diagnostic status; returns true ONLY when out.update_available
     // (manifest device_type matches and version > current). The caller
@@ -107,7 +143,6 @@ public:
 
     // ---- bootloader-settings passthroughs ----
     bool triggerUpdate(uint32_t download_fw_version);
-    bool confirmBoot(uint32_t current_app_fw_version);
     bool readSettings(ilabs_fota_settings_t& out) const;
 
     // ---- escape hatch to the raw QSPI staging layer ----
@@ -115,6 +150,13 @@ public:
 };
 
 // Pre-instantiated singleton, iLabs convention (cf. Adafruit `flash`).
-extern iLabsFotaClass FOTA;
+extern iLabsDevMgmt DevMgmt;
+
+// ---- legacy aliases (pre-0.5.0 API) --------------------------------------
+// The class began life as FOTA-only; it now also owns log upload and the
+// update check, so the primary names are iLabsDevMgmt / DevMgmt. Existing
+// sketches using iLabsFotaClass / FOTA keep compiling unchanged.
+using iLabsFotaClass = iLabsDevMgmt;
+extern iLabsDevMgmt& FOTA;
 
 #endif // ILABS_NRF52_DEVMGMT_H

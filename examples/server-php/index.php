@@ -18,8 +18,10 @@
  *   2. Requires POST. Reads php://input.
  *   3. If X-Log-SHA256 header is present, validates against sha256($body).
  *      Mismatch -> 400 (lets the device retry the upload).
- *   4. Stores under /var/www/logs/{deveui}/{ISO8601_UTC}.log.gz.
- *   5. Returns 200 with JSON {"received": N, "stored_as": "..."}.
+ *   4. Appends the gzip member into storage/{deveui}/{UTC-date}.log.gz
+ *      -- gzip members concatenate, so the daily file decompresses as a
+ *      whole (always-append; no dedup -- see the Store section).
+ *   5. Returns 200 with JSON {"received": N, "stored_as": ...}.
  *
  * Storage retention: ad hoc -- run a cron that deletes files older
  * than 90 days. Example:
@@ -128,7 +130,22 @@ if ($sha_header !== null) {
     }
 }
 
-// ----- Store ----------------------------------------------------------
+// ----- Store (append into one rolling file per device) ----------------
+//
+// Each POST body is a complete, self-contained gzip member. Gzip members
+// concatenate -- `cat a.gz b.gz | gunzip` yields both payloads -- so we
+// append every member into one file per device per UTC day rather than
+// writing a separate file per POST. The device fragments its log into
+// many <=1500 B members (the modem's AT%HTTPSEND cap); the daily file
+// reassembles them transparently and still decompresses as a whole.
+//
+// No dedup: the device's byte offset is relative to its oldest surviving
+// log file and slides DOWN whenever a file is pruned, so it is not a
+// monotonic key we could compare against a persisted high-water (an
+// earlier ?seq scheme did exactly that and silently dropped every member
+// after a device-side prune). We always append. A rare missed-200 re-send
+// duplicates one member's worth of log lines, which is harmless for a
+// diagnostic log and never corrupts the archive.
 
 $dir = $STORAGE_ROOT . '/' . $deveui;
 if (!is_dir($dir)) {
@@ -137,12 +154,11 @@ if (!is_dir($dir)) {
     }
 }
 
-$ts = gmdate('Y-m-d\TH-i-s\Z');
-$filename = $ts . '.log.gz';
-$path = $dir . '/' . $filename;
+$filename = gmdate('Y-m-d') . '.log.gz';
+$path     = $dir . '/' . $filename;
 
-if (file_put_contents($path, $body, LOCK_EX) === false) {
-    respond_json(500, ['error' => 'could not write log file']);
+if (file_put_contents($path, $body, FILE_APPEND | LOCK_EX) === false) {
+    respond_json(500, ['error' => 'could not append log file']);
 }
 
 // Optional: record FW version header into a sidecar txt so the

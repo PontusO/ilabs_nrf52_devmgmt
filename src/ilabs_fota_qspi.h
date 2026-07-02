@@ -163,19 +163,6 @@ public:
     // bootloader treats UPDATE_PENDING as a commit point.
     bool triggerUpdate(uint32_t download_fw_version);
 
-    // Confirm that the currently-running application booted cleanly:
-    // clears ILABS_FOTA_FLAG_BOOT_CONFIRM_REQUIRED, zeros
-    // boot_attempt_count, and pins current_app_fw_version to the value
-    // the running app reports. Call this once the app has reached a
-    // "definitely healthy" milestone (joined LoRa, talked to a sensor,
-    // whatever your guard rail is). Without this, the bootloader will
-    // roll back to the backup slot after 3 boot attempts.
-    //
-    // Idempotent: safe to call on every boot. If no flag clear is
-    // needed AND the current_app_fw_version field already matches,
-    // returns true without writing.
-    bool confirmBoot(uint32_t current_app_fw_version);
-
     // ---- Raw user-region access (for in-house partitions outside the
     //      FOTA reservation, e.g. the log_manager partition) ----
     //

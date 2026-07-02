@@ -47,10 +47,6 @@ void setup() {
     Serial.println("FOTA.begin() failed -- QSPI flash not detected");
     return;
   }
-
-  // Tell the bootloader the running image is healthy so it won't roll
-  // back. Call once you've reached a known-good milestone.
-  FOTA.confirmBoot(ILABS_FW_VERSION(1, 0, 0, 0));
 }
 
 void loop() {

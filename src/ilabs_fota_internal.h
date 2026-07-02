@@ -2,9 +2,9 @@
 //
 // C-linkage bridges that let the extracted C-style orchestrator
 // (ilabs_fota_lte.cpp) and the transport self-test (ilabs_fota_test.cpp)
-// reach the registered transport + log sink that the C++ iLabsFotaClass
+// reach the registered transport + log sink that the C++ iLabsDevMgmt
 // owns. Implemented in iLabs_nrf52_devmgmt.cpp. Sketch code never includes
-// this header -- it uses the iLabsFotaClass setters instead.
+// this header -- it uses the iLabsDevMgmt setters instead.
 
 #ifndef ILABS_FOTA_INTERNAL_H
 #define ILABS_FOTA_INTERNAL_H
@@ -27,6 +27,11 @@ int  ilabs_fota__range_get(const char* url, size_t range_offset,
 int  ilabs_fota__plain_get(const char* url,
                            ilabs_fota_chunk_cb_t cb, void* user);
 
+// The upload transport's declared per-request body cap (the
+// max_body_bytes passed to setUploadTransport); 0 if none registered.
+// The log uploader sizes every gzip member to fit this.
+size_t ilabs_log_upload__max_body(void);
+
 // Invoke the registered HTTPS POST transport (log upload). Returns the
 // transport's HTTP status, or -1 if no upload transport has been
 // registered.
@@ -35,7 +40,7 @@ int  ilabs_log_upload__post(const char* url,
                             const char* sha256_hex,
                             ilabs_fota_chunk_cb_t response_cb, void* user);
 
-// Runtime-configurable parameters owned by iLabsFotaClass, read by the
+// Runtime-configurable parameters owned by iLabsDevMgmt, read by the
 // orchestrator. Defaults: device_type = ILABS_DEVICE_TYPE, megachunk =
 // 100 KiB.
 uint32_t ilabs_fota__device_type(void);

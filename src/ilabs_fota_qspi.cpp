@@ -158,15 +158,26 @@ void iLabsFotaQspi::resume() {
     // realistic wake time. This stops the intermittent resume failures
     // that (before the LOG_* suspend guard) could hang the flush task.
     _transport.begin();
-    _transport.runCommand(0xAB);
-    delayMicroseconds(50);                  // W25Q64JV DPD release, generous margin
 
-    if (!_flash.begin()) {
-        LOG_ERROR("[fota-qspi] resume: flash.begin() failed");
-        s_resume_depth--;                   // failed -- back out
-        return;
+    // Retry the DPD-release + JEDEC re-detect. A single 0xAB + 50 us settle is
+    // usually enough, but it still occasionally fails -- the JEDEC read inside
+    // flash.begin() lands before the chip is fully awake. Previously a one-shot
+    // failure left the WHOLE QSPI log store dead until the next resume: writes
+    // silently dropped, the upload high-water couldn't be persisted, and a log
+    // slice got re-uploaded (duplicate members server-side). Re-issue 0xAB with
+    // a growing settle and retry a few times before giving up -- 0xAB and
+    // flash.begin() are both idempotent, so retrying is safe.
+    for (int attempt = 1; attempt <= 5; attempt++) {
+        _transport.runCommand(0xAB);          // release Deep Power-Down
+        delayMicroseconds(50 * attempt);      // 50,100,150,200,250 us growing margin
+        if (_flash.begin()) {
+            _ready = true;
+            return;
+        }
     }
-    _ready = true;
+
+    LOG_ERROR("[fota-qspi] resume: flash.begin() failed after 5 attempts");
+    s_resume_depth--;                         // failed -- back out (suspend() no-ops at 0)
 }
 
 uint32_t iLabsFotaQspi::chipSize() const {
@@ -393,30 +404,6 @@ bool iLabsFotaQspi::triggerUpdate(uint32_t download_fw_version) {
     // are preserved as-read so the bootloader's rollback / watchdog
     // logic still sees the right reference points.
 
-    return writeSettings(&s);
-}
-
-bool iLabsFotaQspi::confirmBoot(uint32_t current_app_fw_version) {
-    ilabs_fota_settings_t s;
-    if (!readSettings(&s)) {
-        // No prior block -- the bootloader hasn't written one and no
-        // OTA has been triggered. There's no boot to confirm. Bootstrap
-        // a baseline so future trigger/confirm cycles have an anchor.
-        memset(&s, 0, sizeof(s));
-        s.current_app_fw_version = current_app_fw_version;
-        return writeSettings(&s);
-    }
-
-    const bool needs_flag_clear =
-        (s.flags & ILABS_FOTA_FLAG_BOOT_CONFIRM_REQUIRED) != 0 ||
-        s.boot_attempt_count != 0;
-    const bool needs_version_pin =
-        s.current_app_fw_version != current_app_fw_version;
-    if (!needs_flag_clear && !needs_version_pin) return true;
-
-    s.flags                  &= ~ILABS_FOTA_FLAG_BOOT_CONFIRM_REQUIRED;
-    s.boot_attempt_count      = 0;
-    s.current_app_fw_version  = current_app_fw_version;
     return writeSettings(&s);
 }
 
