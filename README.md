@@ -1,8 +1,9 @@
 # iLabs nRF52 Device Management
 
 Device-management services for nRF52 devices with an external QSPI flash
-and an Adafruit-fork bootloader: firmware-over-the-air (FOTA) updates and
-transport-agnostic log upload.
+and the **iLabs fork of the Adafruit nRF52 bootloader**
+([PontusO/Adafruit_nRF52_Bootloader](https://github.com/PontusO/Adafruit_nRF52_Bootloader)):
+firmware-over-the-air (FOTA) updates and transport-agnostic log upload.
 
 The library owns the FOTA pipeline — download a gzip-compressed firmware
 *slot* image over HTTPS, stream-inflate it, stage it into the QSPI download
@@ -24,8 +25,8 @@ network.
 - Dual SHA-256: one over the compressed transport bytes (integrity), one
   over the decompressed payload (cross-checked against the slot header).
 - Resumable, range-based megachunk download (default 100 KiB per request).
-- Transactional A/B bootloader settings block with version + boot-confirm
-  + rollback bookkeeping.
+- Transactional A/B bootloader settings block with version + update
+  bookkeeping.
 - A transport self-test mode (pattern verify, no flash write) for bringing
   up a new modem/transport.
 - Transport-agnostic log upload: gzip-frames and POSTs the new portion of a
@@ -41,8 +42,22 @@ network.
   Connectivity 840 / W25Q64JV).
 - The iLabs nRF52 Arduino BSP (provides `Adafruit_SPIFlashBase` + the nRFx
   QSPI HAL).
-- A matching Adafruit-fork bootloader that understands the slot/settings
-  contract in `src/ilabs_fota_settings.h` and `src/ilabs_fota_slot.h`.
+- **The iLabs fork of the Adafruit nRF52 bootloader — this is a hard
+  dependency, not optional.** The FOTA half of this library only *stages*
+  an image; the actual apply/swap at reboot is performed by the
+  bootloader, and the two communicate through a fixed QSPI slot/settings
+  contract (`src/ilabs_fota_settings.h` / `src/ilabs_fota_slot.h`,
+  mirrored in the bootloader source). The stock Adafruit bootloader does
+  not understand this contract: with it, `update()` will download and
+  stage happily but **nothing is ever applied**.
+
+  - Repo: <https://github.com/PontusO/Adafruit_nRF52_Bootloader>
+    (branch `master`, board `ilabs_connectivity_840_lte`)
+  - Bootloader and library versions must carry the SAME contract headers —
+    both sides `_Static_assert` the layout, so a mismatched pair fails the
+    build rather than bricking a device, but you must update them
+    together.
+  - Log upload has no bootloader dependency; only FOTA does.
 
 ## Installation
 
