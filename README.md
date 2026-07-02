@@ -66,6 +66,12 @@ release zip via *Sketch → Include Library → Add .ZIP Library*.
 
 ## Usage
 
+Runnable examples: `examples/BasicFota` (FOTA wiring with a stub
+transport) and `examples/BasicLogUpload` (log upload with a simulated
+transport -- runs to the OK path on a bare board, and documents the log
+source + POST delivery contract inline). The matching server-side
+receiver is `examples/server-php/index.php`.
+
 ```cpp
 #include <iLabs_nrf52_devmgmt.h>
 
