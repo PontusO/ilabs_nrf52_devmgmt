@@ -37,6 +37,47 @@ iLabsFotaQspi::iLabsFotaQspi()
       _flash(&_transport),
       _ready(false) {}
 
+// -------- GPIO deep-power-down wake --------
+//
+// Wake the W25Q from Deep Power-Down by bit-banging 0xAB (Release Power-Down)
+// on the QSPI pins as plain GPIO, BEFORE nrfx_qspi_init runs.
+//
+// Why not just send 0xAB through the QSPI peripheral (runCommand)? Because
+// nrfx_qspi_init has to run first, and on an asleep chip its ACTIVATE never
+// reaches EVENTS_READY -- the whole peripheral path (init + cinstr) fails
+// (observed: readCommand(0x9F) returns rd=0 with the buffer untouched). The
+// chip parks itself in DPD in suspend() and DPD survives an MCU reset (the
+// flash has its own power rail), so at boot the app inherits a sleeping chip
+// that the peripheral cannot rouse. Driving 0xAB by hand on GPIO wakes it
+// unconditionally; nrfx_qspi_init then re-assigns the pins to the peripheral.
+// 0xAB is a no-op on an already-awake chip, so this is always safe. This is a
+// straight port of the bootloader's qspi_wake_from_dpd_gpio() (qspi_flash.c).
+//
+// Guarded on the variant's PIN_QSPI_* so the library still builds on a board
+// that doesn't expose them (there it falls back to the old peripheral path).
+static void qspi_wake_from_dpd_gpio(void) {
+#if defined(PIN_QSPI_SCK) && defined(PIN_QSPI_CS) && defined(PIN_QSPI_IO0)
+    NRF_QSPI->ENABLE = 0;                 // release the pins from the peripheral
+
+    pinMode(PIN_QSPI_CS,  OUTPUT); digitalWrite(PIN_QSPI_CS,  HIGH); // CS idle high
+    pinMode(PIN_QSPI_SCK, OUTPUT); digitalWrite(PIN_QSPI_SCK, LOW);  // SCK idle low (mode 0)
+    pinMode(PIN_QSPI_IO0, OUTPUT);                                   // IO0 = MOSI (single line)
+    delayMicroseconds(2);
+
+    digitalWrite(PIN_QSPI_CS, LOW);       // select
+    delayMicroseconds(1);
+    for (int i = 7; i >= 0; i--) {        // shift out 0xAB, MSB first
+        digitalWrite(PIN_QSPI_IO0, (0xAB >> i) & 1);
+        delayMicroseconds(1);
+        digitalWrite(PIN_QSPI_SCK, HIGH); // rising edge: chip samples IO0
+        delayMicroseconds(1);
+        digitalWrite(PIN_QSPI_SCK, LOW);  // falling edge
+    }
+    digitalWrite(PIN_QSPI_CS, HIGH);      // deselect: command takes effect
+    delayMicroseconds(50);                // tRES1 margin before nrfx init
+#endif
+}
+
 // -------- begin / chip query --------
 
 bool iLabsFotaQspi::begin() {
@@ -51,9 +92,10 @@ bool iLabsFotaQspi::begin() {
     // flash.begin() silently fails. Pre-wake removes the hazard with
     // a ~5 µs cost on every boot (harmless when the chip is already
     // awake).
-    _transport.begin();                 // bring QSPI peripheral up
-    _transport.runCommand(0xAB);        // Release from DPD
-    delayMicroseconds(5);               // W25Q64JV tRES1 (datasheet)
+    qspi_wake_from_dpd_gpio();           // GPIO bit-bang wake BEFORE nrfx init
+    _transport.begin();                  // bring QSPI peripheral up
+    _transport.runCommand(0xAB);         // belt-and-suspenders release (chip now awake)
+    delayMicroseconds(5);                // W25Q64JV tRES1 (datasheet)
 
     if (!_flash.begin()) {
         LOG_ERROR("[fota-qspi] flash.begin() failed");
@@ -157,6 +199,7 @@ void iLabsFotaQspi::resume() {
     // practice, so use 50 µs -- still negligible, well clear of any
     // realistic wake time. This stops the intermittent resume failures
     // that (before the LOG_* suspend guard) could hang the flush task.
+    qspi_wake_from_dpd_gpio();           // GPIO bit-bang wake BEFORE nrfx init
     _transport.begin();
 
     // Retry the DPD-release + JEDEC re-detect. A single 0xAB + 50 us settle is
