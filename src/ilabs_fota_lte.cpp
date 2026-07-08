@@ -76,16 +76,16 @@ typedef struct {
     // Per-megachunk tracking. The orchestrator wraps multiple
     // ilabs_fota__range_get() calls (closed-range, ~100 KiB each) -- uzlib +
     // SHA + slot-write state above is preserved across megachunks;
-    // only this flag resets per call. session_content_length is
-    // vestigial -- each megachunk's response Content-Length is the
-    // slice size, not the total -- but is retained for diagnostic
-    // dumps.
+    // these two reset per call. session_content_length is the response
+    // Content-Length for the current range, used by the outer loop to
+    // tell a genuine EOF (delivered == promised) from a mid-transfer
+    // transport drop (delivered < promised, which is resumable).
     bool                   session_first_chunk; // true until cb sees the
                                                  // first body byte of this
                                                  // megachunk
-    size_t                 session_content_length; // diagnostic: latest
-                                                    // megachunk's
-                                                    // Content-Length
+    size_t                 session_content_length; // this range's promised
+                                                    // byte count (0 until the
+                                                    // cb sees the first body)
     ilabs_fota_result_t* result;           // borrowed pointer, lives in caller
 } ota_state_t;
 
@@ -302,9 +302,9 @@ static bool ota_chunk_cb(const uint8_t* chunk, size_t chunk_len,
     if (s_ota.pipeline_error) return false;
 
     // First chunk of a megachunk: record this response's Content-Length
-    // (= slice size, e.g. 100 KiB) for diagnostic logging. Megachunks
-    // don't track a "total" -- the outer loop terminates on either
-    // uzlib TINF_DONE or short delivery, not byte counting.
+    // (the byte count the server promises for this range). The outer
+    // loop compares delivered-vs-promised to distinguish a genuine EOF
+    // from a mid-transfer transport drop it should resume past.
     if (s_ota.session_first_chunk) {
         s_ota.session_first_chunk = false;
         if (content_length > 0) {
@@ -471,6 +471,10 @@ bool ilabs_fota_download(const char* url,
     const size_t MEGACHUNK_SIZE = ilabs_fota__megachunk_size();
     int    http_status   = 0;
     int    megachunk_idx = 0;
+    // Bound consecutive zero-progress resume attempts so a wedged modem
+    // can't spin forever. Any forward progress resets it.
+    int          resume_stalls     = 0;
+    const int    MAX_RESUME_STALLS = 3;
     while (!s_ota.stream_done && !s_ota.pipeline_error) {
         size_t off = result->compressed_bytes;
         size_t end = off + MEGACHUNK_SIZE - 1;
@@ -480,7 +484,8 @@ bool ilabs_fota_download(const char* url,
                  (unsigned long)off, (unsigned long)end);
 
         size_t before = result->compressed_bytes;
-        s_ota.session_first_chunk = true;
+        s_ota.session_first_chunk    = true;
+        s_ota.session_content_length = 0;   // per-response; set by the cb
         http_status = ilabs_fota__range_get(url, off, end, ota_chunk_cb, nullptr);
         size_t delivered = result->compressed_bytes - before;
 
@@ -502,25 +507,47 @@ bool ilabs_fota_download(const char* url,
                  (unsigned long)delivered,
                  (unsigned long)MEGACHUNK_SIZE);
 
-        // Short delivery means the server hit EOF. If uzlib hasn't
-        // also reported done, the gzip stream was truncated -- bail
-        // so the SHA verify catches it as an integrity failure.
+        // A slice shorter than requested is EITHER a genuine EOF (the
+        // final short slice) OR a mid-transfer transport drop. The
+        // response Content-Length (session_content_length) is what the
+        // server promised for THIS range; getting fewer bytes than that
+        // means the modem dropped mid-body (Adrastea FW 06.006), which
+        // is resumable -- compressed_bytes already advanced by
+        // `delivered`, so looping re-issues a range GET from the resume
+        // point. uzlib/SHA/slot state carry across iterations untouched.
         if (delivered < MEGACHUNK_SIZE) {
+            const bool transport_dropped =
+                (s_ota.session_content_length > 0 &&
+                 delivered < s_ota.session_content_length) ||
+                (delivered == 0);   // no body at all -> not a valid EOF here
+                                    // (a stream_done EOF already exited above)
+
+            if (transport_dropped) {
+                if (delivered > 0) {
+                    resume_stalls = 0;                    // forward progress
+                } else if (++resume_stalls > MAX_RESUME_STALLS) {
+                    LOG_ERROR("[fota] transport made no progress after %d "
+                              "resume attempts -- aborting", MAX_RESUME_STALLS);
+                    break;
+                }
+                LOG_WARN("[fota] megachunk %d truncated by transport "
+                         "(delivered %lu of %lu B) -- resuming from offset %lu",
+                         megachunk_idx + 1,
+                         (unsigned long)delivered,
+                         (unsigned long)s_ota.session_content_length,
+                         (unsigned long)result->compressed_bytes);
+                continue;   // resume; not a completed megachunk
+            }
+
+            // Genuine EOF: the server delivered its whole (short) final
+            // slice. If uzlib isn't also done the file itself is
+            // truncated -- bail so the SHA verify flags it.
             if (!s_ota.stream_done) {
                 LOG_ERROR("[fota] short megachunk (%lu < %lu) "
                           "but uzlib not done -- truncated stream",
                           (unsigned long)delivered,
                           (unsigned long)MEGACHUNK_SIZE);
             }
-            break;
-        }
-
-        // Zero delivery on a non-final megachunk -- session collapsed
-        // without giving us anything. Brief backoff and retry once,
-        // otherwise bail. We don't expect this from clean HTTPCMD but
-        // belt-and-braces.
-        if (delivered == 0) {
-            LOG_ERROR("[fota] zero-delivery megachunk -- aborting");
             break;
         }
 

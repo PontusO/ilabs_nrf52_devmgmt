@@ -22,15 +22,19 @@
 // Retry ownership map (who retries what -- keep it this way, stacking
 // another retry layer multiplies attempts):
 //   - THIS LIBRARY retries a log-upload POST (POST_MAX_ATTEMPTS) when the
-//     transport reports "definitely not delivered" (status <= 0), and
-//     walks the FOTA megachunk loop; it never retries a delivered
-//     request.
+//     transport reports "definitely not delivered" (status <= 0). It also
+//     RESUMES the FOTA megachunk loop over a mid-transfer transport drop:
+//     when a range slice delivers fewer bytes than its response
+//     Content-Length promised, the loop re-issues a range GET from the
+//     resume offset (bounded by MAX_RESUME_STALLS consecutive zero-progress
+//     attempts). This is idempotent -- each byte lands once via the
+//     closed-range offset -- so it does not duplicate data.
 //   - THE TRANSPORT owns resolving link-level ambiguity (e.g. waiting
 //     for the modem's completion URC before declaring failure) and any
 //     single-request pacing/timeouts. It does NOT re-send bodies.
 //   - THE APPLICATION owns session-level retry (re-triggering a whole
-//     upload/update on a later wake); it does not retry individual
-//     requests.
+//     upload/update on a later wake) as the outer backstop if a download
+//     exhausts its in-session resume budget.
 //
 // QSPI partition addresses are a fixed contract with the bootloader
 // (ilabs_fota_settings.h / ilabs_fota_slot.h). They are compile-time

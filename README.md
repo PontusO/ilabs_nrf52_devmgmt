@@ -25,6 +25,10 @@ network.
 - Dual SHA-256: one over the compressed transport bytes (integrity), one
   over the decompressed payload (cross-checked against the slot header).
 - Resumable, range-based megachunk download (default 100 KiB per request).
+  A mid-transfer transport drop (fewer bytes delivered than the response
+  Content-Length promised — e.g. Adrastea FW 06.006 dropping an HTTP read
+  partway) is resumed in-session from the exact byte offset, rather than
+  failing the whole download; bounded by a zero-progress stall cap.
 - Transactional A/B bootloader settings block with version + update
   bookkeeping.
 - A transport self-test mode (pattern verify, no flash write) for bringing
