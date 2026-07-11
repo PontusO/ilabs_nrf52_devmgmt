@@ -36,6 +36,8 @@
 #define FOTA_FIRMWARE_URL    "https://example.com/connectivity840/fota/firmware.slot.gz"
 // DUMMY per-device log-upload URL (…/logs/<16-hex-DevEUI>):
 #define LOG_UPLOAD_URL       "https://example.com/myproduct/logs/0011223344556677"
+// DUMMY per-device diagnostics URL (…/diag/<16-hex-DevEUI>):
+#define DIAG_URL             "https://example.com/myproduct/diag/0011223344556677"
 
 #define ATTACH_BUDGET_MS     (5UL * 60UL * 1000UL)   // first cold attach can be slow
 #define CYCLE_PERIOD_MS      (10UL * 60UL * 1000UL)  // one FOTA+upload attempt / 10 min
@@ -212,6 +214,18 @@ void loop() {
     Serial.print(" status=");    Serial.print((int)lr.status);
     Serial.print(" raw=");       Serial.print(lr.raw_bytes);
     Serial.print(" gzip=");      Serial.println(lr.compressed_bytes);
+
+    // --- a diagnostic against the DUMMY diag URL ---
+    // One short severity-tagged line, server-timestamped, shown on the device
+    // page. ILABS_DIAG_DIRECT here just POSTs within this already-open modem
+    // session (this example owns the session, so no begin/end hooks are
+    // registered and the mode's open/close is a no-op). A product that lets the
+    // library drive the link would register onSessionBegin/onSessionEnd and use
+    // ILABS_DIAG_KEEP_OPEN / ILABS_DIAG_CLOSE to batch several sends per link.
+    Serial.println("=== diagnostic attempt ===");
+    int ds = DevMgmt.postDiagnostic(DIAG_URL, 1 /*INFO*/, line,
+                                    ILABS_DIAG_DIRECT);
+    Serial.print("diag: http="); Serial.println(ds);
   }
   powerDownModem();
 

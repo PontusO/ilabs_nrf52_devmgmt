@@ -65,6 +65,15 @@ using iLabsFotaTestResult = ilabs_fota_test_result_t;
 using iLabsLogUploadResult = ilabs_log_upload_result_t;
 using iLabsUpdateCheck     = ilabs_fota_update_check_t;
 
+// Diagnostic data-channel mode for postDiagnostic(). Built on the session
+// begin/end hooks (onSessionBegin/onSessionEnd): begin = open the link,
+// end = close it.
+typedef enum {
+    ILABS_DIAG_DIRECT    = 0,  // open channel, send, close  (standalone, default)
+    ILABS_DIAG_KEEP_OPEN = 1,  // open if needed, send, LEAVE open for more
+    ILABS_DIAG_CLOSE     = 2,  // send (open if needed), then close the channel
+} ilabs_diag_mode_t;
+
 class iLabsDevMgmt {
 public:
     // ---- lifecycle ----
@@ -144,6 +153,31 @@ public:
     // data.
     bool uploadLog(const char* url, const ilabs_log_source_t& src,
                    iLabsLogUploadResult& out);
+
+    // ---- diagnostics (short, severity-tagged, server-timestamped) ----
+    // Immediately POST one diagnostic message to `url` (the per-device diag
+    // endpoint) over the setUploadTransport() POST transport. Unlike uploadLog
+    // there is no gzip and no log store -- just one short line. `level` is
+    // 0=DEBUG 1=INFO 2=WARN 3=ERROR (clamped). Severity is sent as a `?sev=N`
+    // query param (the modem POST path can't set custom headers); the body is
+    // the raw message text, clamped to the transport's per-request cap. Returns
+    // the HTTP status (>=200 on a server reply, <=0 on transport failure).
+    //
+    // `mode` drives the data channel via the onSessionBegin/onSessionEnd hooks
+    // (begin = open the link, end = close it):
+    //   ILABS_DIAG_DIRECT     open (if closed), send, close   -- standalone
+    //   ILABS_DIAG_KEEP_OPEN  open (if closed), send, LEAVE open for more
+    //   ILABS_DIAG_CLOSE      send (open if needed), then close
+    // So a run of KEEP_OPEN calls (optionally with an uploadLog in between) then
+    // a CLOSE sends several transactions over one open link. If no session hooks
+    // are registered (the caller owns the modem session), it just POSTs.
+    int postDiagnostic(const char* url, int level, const char* msg,
+                       ilabs_diag_mode_t mode = ILABS_DIAG_DIRECT);
+
+    // Close a channel left open by ILABS_DIAG_KEEP_OPEN (fires onSessionEnd if
+    // a session is open; no-op otherwise) -- e.g. after an uploadLog rode the
+    // same open channel without a trailing diagnostic.
+    void closeDiagChannel();
 
     // ---- bootloader-settings passthroughs ----
     bool triggerUpdate(uint32_t download_fw_version);

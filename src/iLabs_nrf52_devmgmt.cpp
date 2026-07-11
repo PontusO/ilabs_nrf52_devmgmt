@@ -36,6 +36,27 @@ static char     s_manifest_url[ILABS_FOTA_URL_MAX] = { 0 };
 static uint32_t s_device_type  = ILABS_DEVICE_TYPE;
 static size_t   s_megachunk    = 100 * 1024;
 
+// True while the link "channel" is held open. A call that finds it already
+// open neither re-fires begin nor closes it -- this is what lets
+// postDiagnostic(ILABS_DIAG_KEEP_OPEN) keep the link up across several
+// transactions (more diagnostics, and/or an uploadLog), and what lets
+// update()/transportSelfTest() ride an already-open channel instead of
+// double-opening it. begin/end are the onSessionBegin/onSessionEnd hooks.
+static bool s_session_open = false;
+
+static void sessionOpen(void) {
+    if (!s_session_open) {
+        if (s_begin_fn) s_begin_fn(s_begin_user);
+        s_session_open = true;
+    }
+}
+static void sessionClose(void) {
+    if (s_session_open) {
+        if (s_end_fn) s_end_fn(s_end_user);
+        s_session_open = false;
+    }
+}
+
 // ---------------------------------------------------------------------
 // Internal C-linkage bridges (declared in ilabs_fota_internal.h).
 // ---------------------------------------------------------------------
@@ -139,9 +160,10 @@ bool iLabsDevMgmt::update(const char* url, iLabsFotaResult& out) {
         ilabs_fota__logf(3, "[fota] no URL configured -- nothing to do");
         return false;
     }
-    if (s_begin_fn) s_begin_fn(s_begin_user);
+    bool owned = !s_session_open;   // only close a channel we opened here
+    sessionOpen();
     bool ok = ilabs_fota_download(u, &out);
-    if (s_end_fn) s_end_fn(s_end_user);
+    if (owned) sessionClose();
     return ok;
 }
 
@@ -151,9 +173,10 @@ bool iLabsDevMgmt::update(iLabsFotaResult& out) {
 
 bool iLabsDevMgmt::transportSelfTest(const char* url, iLabsFotaTestResult& out) {
     const char* u = url ? url : ilabs_fota_test_url();
-    if (s_begin_fn) s_begin_fn(s_begin_user);
+    bool owned = !s_session_open;
+    sessionOpen();
     ilabs_fota_test_run(u, &out);
-    if (s_end_fn) s_end_fn(s_end_user);
+    if (owned) sessionClose();
     return out.pass;
 }
 
@@ -256,6 +279,52 @@ bool iLabsDevMgmt::uploadLog(const char* url, const ilabs_log_source_t& src,
     // modem session (the LTE task that powered + attached the modem and
     // holds the sleep lock), unlike update() which owns its own session.
     return ilabs_log_upload_run(url, &src, &out);
+}
+
+int iLabsDevMgmt::postDiagnostic(const char* url, int level, const char* msg,
+                                 ilabs_diag_mode_t mode) {
+    if (!url || !msg) return -1;
+    if (!s_post_fn)   return -1;              // no POST transport registered
+
+    if (level < 0) level = 0;
+    if (level > 3) level = 3;
+
+    // Clamp the message to the transport's per-request cap: a single diagnostic
+    // body can't be shrunk-and-retried like a log chunk, so an oversized one
+    // would just wedge the transport. Fall back to a safe default if the cap
+    // wasn't declared via setUploadTransport().
+    size_t cap     = s_post_max ? s_post_max : 512;
+    size_t msg_len = strlen(msg);
+    if (msg_len > cap) msg_len = cap;
+    if (msg_len == 0)  return -1;
+
+    // Severity rides in the query (?sev=N) -- the modem POST path can't set
+    // custom headers; the transport appends its own &len=. Body = message text.
+    char url_q[288];
+    int n = snprintf(url_q, sizeof(url_q), "%s%csev=%d",
+                     url, (strchr(url, '?') ? '&' : '?'), level);
+    if (n < 0 || (size_t) n >= sizeof(url_q)) return -1;   // URL too long
+
+    // Every mode needs the link up to send; KEEP_OPEN leaves it up afterwards.
+    const bool close_after = (mode != ILABS_DIAG_KEEP_OPEN);
+    sessionOpen();
+
+    // Only a transport-level failure (http <= 0) retries; ANY real HTTP status
+    // (incl. a 4xx) is terminal -- a diagnostic is best-effort and re-POSTing
+    // risks a duplicate row. No response body is read (nullptr response_cb).
+    int http_status = 0;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        http_status = s_post_fn(url_q, (const uint8_t*) msg, msg_len,
+                                nullptr, nullptr, nullptr);
+        if (http_status > 0) break;
+    }
+
+    if (close_after) sessionClose();
+    return http_status;
+}
+
+void iLabsDevMgmt::closeDiagChannel() {
+    sessionClose();
 }
 
 bool iLabsDevMgmt::triggerUpdate(uint32_t download_fw_version) {
