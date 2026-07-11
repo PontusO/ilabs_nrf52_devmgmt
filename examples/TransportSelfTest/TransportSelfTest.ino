@@ -9,8 +9,8 @@
  *
  * Generate the pattern file with a tiny script (byte[i] = i & 0xFF) and
  * host it on your server. As with BasicFota, the plain-GET adapter below
- * is a STUB -- forward it to your modem driver (the pingday firmware uses
- * lte_httpsGetSocket).
+ * is a STUB -- forward it to your modem driver (for Würth Adrastea-I, the
+ * iLabs_nrf52_adrastea library's lte_httpsGetSocket).
  */
 
 #include <iLabs_nrf52_devmgmt.h>
