@@ -21,11 +21,14 @@
  *   Transport cap: the Adrastea-I AT%HTTPSEND POST path tops out at 1500
  *   bytes per request (hex mode; FW 06.006's multi-chunk "more-pending"
  *   mode is broken). So every gzip member must land <= MEMBER_OUT_MAX.
- *   uploadOneChunk() starts at CHUNK_RAW_MAX raw bytes and, if the
- *   compressed member overshoots, halves the raw take and recompresses
- *   (down to MIN_RAW, which is small enough that even static-Huffman
- *   expansion of incompressible input still fits). The server stitches
- *   the many small members back into one file per device (gzip members
+ *   uploadOneChunk() starts at CHUNK_RAW_MAX raw bytes (sized to overshoot
+ *   the cap for typical log ratios) and, if the compressed member exceeds
+ *   the cap, shrinks the raw take PROPORTIONALLY (try_len * cap / out_len)
+ *   and recompresses -- landing near the cap in 1-2 passes so each member
+ *   FILLS the cap, minimising the POST count (each Adrastea POST costs a
+ *   ~2.6 s cellular round-trip). Floors at MIN_RAW, small enough that even
+ *   static-Huffman expansion of incompressible input still fits. The server
+ *   stitches the many members back into one file per device (gzip members
  *   concatenate), so the device-side fragmentation is invisible there.
  *
  * Memory footprint per call (all heap, freed at end):
@@ -66,27 +69,36 @@ extern "C" {
 // below 600 are clamped up to it.
 #define MEMBER_CAP_FLOOR 600u
 
-#define CHUNK_RAW_MAX   1536u           /* raw bytes per upload chunk (start): */
-                                        /* logs compress ~2x, so this usually  */
-                                        /* one-shots to just under a 750 cap   */
+#define CHUNK_RAW_MAX   4096u           /* raw bytes per upload chunk (start).  */
+                                        /* Sized so the FIRST compress OVER-    */
+                                        /* shoots the cap for typical log ratio */
+                                        /* (~2.5-4x -> ~1000-1600 B > 750), so  */
+                                        /* the proportional shrink then fills   */
+                                        /* the cap. Only >~5.5x-compressible    */
+                                        /* data stays buffer-limited under it.  */
 #define MIN_RAW         512u            /* fit-loop floor (see MEMBER_CAP_FLOOR) */
 #define CHUNK_OUT_MAX   (CHUNK_RAW_MAX + CHUNK_RAW_MAX / 4u + 64u)
                                         /* one attempt's worst-case expansion */
                                         /* (~1.125x) + gzip framing           */
 #define HASH_BITS       10u             /* 1024 entries * 4 B = 4 KB */
 
-// Maximum number of POSTs per call to ilabs_log_upload_run(). Bounded so
-// a misbehaving server-side never burns the whole modem-on session. Sized
-// to drain a typical backlog in one session now that members are capped at
-// ~1500 B (32 * ~1.2 KB ~= 38 KB compressed / ~128 KB raw per run).
-#define MAX_CHUNKS_PER_CALL  32u
+// Maximum number of POSTs per call to ilabs_log_upload_run(). Bounds one
+// modem-on session so a large backlog can't pin the modem for an unbounded
+// time; the application's autonomous re-trigger drains whatever's left over
+// across later sessions. Raised 32 -> 128 (~128 * ~1.2 KB ~= 150 KB
+// compressed / ~300 KB raw per run) so a remote unit with days of backlog
+// makes real headway each session instead of nibbling 32 chunks at a time.
+#define MAX_CHUNKS_PER_CALL  128u
 
 // How many times to (re)send a single member when the transport reports a
 // failure with no HTTP response (http_status <= 0 -- e.g. an Adrastea
 // SESTERM before POSTCONF, a transient TLS/TCP drop on weak signal). Each
 // attempt re-runs the transport's full session setup, so they self-space by
-// seconds. A real HTTP status (>0) never retries.
-#define POST_MAX_ATTEMPTS    3
+// seconds -- 6 attempts gives a weak-signal link ~30 s of natural retry
+// spacing to get one member through before the run gives up (and the app's
+// autonomous re-trigger brings a fresh session up later). A real HTTP
+// status (>0) never retries.
+#define POST_MAX_ATTEMPTS    6
 
 // ---- Gzip framing helpers -----------------------------------------------
 
@@ -262,12 +274,18 @@ static bool uploadOneChunk(const char* url, const ilabs_log_source_t* src,
         if (out_len <= member_cap) break;       // fits the transport cap
         if (try_len <= MIN_RAW) break;          // already at the floor
 
-        // Overshoot: halve the take and recompress. MIN_RAW is small
-        // enough that even worst-case static-Huffman expansion fits any
-        // cap >= MEMBER_CAP_FLOOR, so the loop always terminates with a
-        // member <= member_cap.
-        try_len /= 2;
-        if (try_len < MIN_RAW) try_len = MIN_RAW;
+        // Overshoot: shrink the take PROPORTIONALLY toward ~97% of the cap and
+        // recompress. Compression is ~linear in input size for homogeneous log
+        // text, so (try_len * cap / out_len) lands near the cap in 1-2 passes,
+        // filling it -- vs. blind halving, which discards up to half the fill
+        // and leaves members at ~60% of the cap. The 97% target leaves a small
+        // margin so the recompressed member doesn't tip back over. MIN_RAW
+        // floors the take, so the loop always terminates with member <= cap.
+        uint32_t next = (uint32_t)(((uint64_t)try_len * member_cap * 97u)
+                                   / ((uint64_t)out_len * 100u));
+        if (next >= try_len) next = try_len - 1u;   // guarantee forward progress
+        if (next < MIN_RAW)  next = MIN_RAW;
+        try_len = next;
     }
 
     free(raw_buf);
