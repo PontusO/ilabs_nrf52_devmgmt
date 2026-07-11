@@ -8,10 +8,12 @@
  *   4. Call FOTA.update(); on success, FOTA.triggerUpdate() + reboot.
  *
  * The transport adapter below is a STUB that returns -1 ("no transport").
- * In a real product you forward it to your modem driver -- the pingday
- * firmware forwards this to its Adrastea-I LTE driver's lte_httpsGet().
- * See that sketch for a complete, hardware-proven transport. With the
- * stub, this sketch compiles and runs but every update fails fast.
+ * In a real product you forward it to your modem driver. For Würth
+ * Adrastea-I LTE, the iLabs_nrf52_adrastea library provides a hardware-
+ * proven lte_httpsGet() -- forward this adapter straight to it; see the
+ * LteFotaAndLogUpload example for a complete real-modem wiring of both
+ * libraries. With the stub, this sketch compiles and runs but every update
+ * fails fast.
  */
 
 #include <iLabs_nrf52_devmgmt.h>

@@ -11,15 +11,17 @@
  * Three injection points every integration needs:
  *   1. A log SOURCE: where the bytes live + the upload high-water mark.
  *      The library never owns your log store -- it reads and advances
- *      through these callbacks (the pingday firmware backs them with a
+ *      through these callbacks (a real product typically backs them with a
  *      LittleFS-on-QSPI rotating log; here a RAM buffer keeps it simple).
  *   2. An HTTPS POST transport + its per-request body cap.
  *   3. DevMgmt.uploadLog(url, source, result) from your connectivity
  *      task, inside an already-open network session.
  *
  * The transport below is SIMULATED (prints the POST, fabricates the
- * server's JSON reply) so this sketch runs to the OK path on a bare
- * board. Replace it with your modem's HTTPS POST -- and read the
+ * server's JSON reply) so this sketch runs to the OK path on a bare board.
+ * Replace it with your modem's HTTPS POST -- for Würth Adrastea-I, the
+ * iLabs_nrf52_adrastea library's lte_httpsPost() is a hardware-proven fit
+ * (see the LteFotaAndLogUpload example for a real-modem wiring). Read the
  * DELIVERY CONTRACT comment there first; it is load-bearing.
  *
  * Unlike FOTA, log upload needs no QSPI staging and no bootloader --
