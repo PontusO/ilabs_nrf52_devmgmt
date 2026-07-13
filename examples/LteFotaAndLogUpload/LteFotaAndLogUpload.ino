@@ -216,16 +216,24 @@ void loop() {
     Serial.print(" gzip=");      Serial.println(lr.compressed_bytes);
 
     // --- a diagnostic against the DUMMY diag URL ---
-    // One short severity-tagged line, server-timestamped, shown on the device
-    // page. ILABS_DIAG_DIRECT here just POSTs within this already-open modem
-    // session (this example owns the session, so no begin/end hooks are
-    // registered and the mode's open/close is a no-op). A product that lets the
-    // library drive the link would register onSessionBegin/onSessionEnd and use
+    // Server-timestamped, shown on the device page. The body is a JSON bundle;
+    // the server needs "lvl" (0-3) + "msg" and stores any extra keys.
+    // ILABS_DIAG_DIRECT here just POSTs within this already-open modem session
+    // (this example owns the session, so the begin/end hooks aren't registered
+    // and the mode's open/close is a no-op). A product that lets the library
+    // drive the link would register onSessionBegin/onSessionEnd and use
     // ILABS_DIAG_KEEP_OPEN / ILABS_DIAG_CLOSE to batch several sends per link.
     Serial.println("=== diagnostic attempt ===");
-    int ds = DevMgmt.postDiagnostic(DIAG_URL, 1 /*INFO*/, line,
-                                    ILABS_DIAG_DIRECT);
+    // Convenience form -> {"lvl":1,"msg":"<line>"}:
+    int ds = DevMgmt.postDiagnostic(DIAG_URL, 1 /*INFO*/, line, ILABS_DIAG_DIRECT);
     Serial.print("diag: http="); Serial.println(ds);
+    // Rich form -> a JSON bundle with extra fields the server stores/queries:
+    char j[200];
+    snprintf(j, sizeof(j),
+             "{\"lvl\":3,\"msg\":\"demo error\",\"uptime\":%lu,\"heap\":%lu}",
+             (unsigned long)(millis() / 1000), (unsigned long)0);
+    int dj = DevMgmt.postDiagnosticJson(DIAG_URL, j, ILABS_DIAG_DIRECT);
+    Serial.print("diagJson: http="); Serial.println(dj);
   }
   powerDownModem();
 

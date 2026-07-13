@@ -9,6 +9,7 @@
 #include "iLabs_nrf52_devmgmt.h"
 #include "ilabs_fota_internal.h"
 
+#include <Arduino.h>    // millis() for the heartbeat schedule
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,6 +36,23 @@ static char     s_url[256]     = { 0 };
 static char     s_manifest_url[ILABS_FOTA_URL_MAX] = { 0 };
 static uint32_t s_device_type  = ILABS_DEVICE_TYPE;
 static size_t   s_megachunk    = 100 * 1024;
+
+// Heartbeat schedule + config. Interval in ms (0 => disabled); s_hb_last_ms is
+// the millis() of the last send (or of start), used for the wrap-safe due check.
+static char                        s_hb_url[256]    = { 0 };
+static ilabs_heartbeat_provider_fn s_hb_provider    = nullptr;
+static void*                       s_hb_user        = nullptr;
+static uint32_t                    s_hb_interval_ms = 0;
+static uint32_t                    s_hb_last_ms     = 0;
+static bool                        s_hb_enabled     = false;
+
+// Cap the interval at 31 days so the millis()-based wrap-safe diff stays well
+// inside the ~49.7-day millis() wrap. 0 disables.
+static uint32_t hbHoursToMs(uint32_t hours) {
+    if (hours == 0) return 0;
+    if (hours > 744) hours = 744;   // 31 days
+    return hours * 3600UL * 1000UL;
+}
 
 // True while the link "channel" is held open. A call that finds it already
 // open neither re-fires begin nor closes it -- this is what lets
@@ -281,50 +299,155 @@ bool iLabsDevMgmt::uploadLog(const char* url, const ilabs_log_source_t& src,
     return ilabs_log_upload_run(url, &src, &out);
 }
 
-int iLabsDevMgmt::postDiagnostic(const char* url, int level, const char* msg,
-                                 ilabs_diag_mode_t mode) {
-    if (!url || !msg) return -1;
-    if (!s_post_fn)   return -1;              // no POST transport registered
+// Effective diagnostic body cap: the transport's per-request cap (declared via
+// setUploadTransport), or a safe default, bounded to the local build buffer.
+static size_t diagBodyCap(void) {
+    size_t cap = s_post_max ? s_post_max : 512;
+    if (cap > 760) cap = 760;
+    return cap;
+}
 
-    if (level < 0) level = 0;
-    if (level > 3) level = 3;
+// Build {"lvl":N,"msg":"<escaped>"} into buf (capacity `cap`), truncating the
+// message if needed so the result is always VALID JSON within the cap (a diag
+// body can't be shrink-retried like a log chunk). Returns the length, or 0.
+static size_t buildDiagJson(char* buf, size_t cap, int level, const char* msg) {
+    if (cap < 20) return 0;
+    int n = snprintf(buf, cap, "{\"lvl\":%d,\"msg\":\"", level);
+    if (n < 0 || (size_t) n >= cap) return 0;
+    size_t o = (size_t) n;
+    for (const char* p = msg; *p; ++p) {
+        unsigned char c    = (unsigned char) *p;
+        size_t        need = (c == '"' || c == '\\') ? 2 : 1;
+        if (o + need + 2 >= cap) break;              // leave room for closing "}
+        if (c == '"' || c == '\\') { buf[o++] = '\\'; buf[o++] = (char) c; }
+        else if (c < 0x20)          { buf[o++] = ' '; }   // strip control chars
+        else                         { buf[o++] = (char) c; }
+    }
+    buf[o++] = '"';
+    buf[o++] = '}';
+    buf[o]   = 0;
+    return o;
+}
 
-    // Clamp the message to the transport's per-request cap: a single diagnostic
-    // body can't be shrunk-and-retried like a log chunk, so an oversized one
-    // would just wedge the transport. Fall back to a safe default if the cap
-    // wasn't declared via setUploadTransport().
-    size_t cap     = s_post_max ? s_post_max : 512;
-    size_t msg_len = strlen(msg);
-    if (msg_len > cap) msg_len = cap;
-    if (msg_len == 0)  return -1;
-
-    // Severity rides in the query (?sev=N) -- the modem POST path can't set
-    // custom headers; the transport appends its own &len=. Body = message text.
-    char url_q[288];
-    int n = snprintf(url_q, sizeof(url_q), "%s%csev=%d",
-                     url, (strchr(url, '?') ? '&' : '?'), level);
-    if (n < 0 || (size_t) n >= sizeof(url_q)) return -1;   // URL too long
-
-    // Every mode needs the link up to send; KEEP_OPEN leaves it up afterwards.
+// Shared core: manage the channel per `mode`, then POST `body` (already sized
+// to the transport cap). No response body is read; retry only on transport
+// failure (http <= 0) -- any HTTP status is terminal (best-effort; re-POST
+// would risk a duplicate row). The transport appends its own &len=.
+static int postDiagBody(const char* url, const uint8_t* body, size_t len,
+                        ilabs_diag_mode_t mode) {
+    if (!s_post_fn || len == 0) return -1;
     const bool close_after = (mode != ILABS_DIAG_KEEP_OPEN);
     sessionOpen();
-
-    // Only a transport-level failure (http <= 0) retries; ANY real HTTP status
-    // (incl. a 4xx) is terminal -- a diagnostic is best-effort and re-POSTing
-    // risks a duplicate row. No response body is read (nullptr response_cb).
     int http_status = 0;
     for (int attempt = 0; attempt < 2; attempt++) {
-        http_status = s_post_fn(url_q, (const uint8_t*) msg, msg_len,
-                                nullptr, nullptr, nullptr);
+        http_status = s_post_fn(url, body, len, nullptr, nullptr, nullptr);
         if (http_status > 0) break;
     }
-
     if (close_after) sessionClose();
     return http_status;
 }
 
+int iLabsDevMgmt::postDiagnostic(const char* url, int level, const char* msg,
+                                 ilabs_diag_mode_t mode) {
+    if (!url || !msg || !s_post_fn) return -1;
+    if (level < 0) level = 0;
+    if (level > 3) level = 3;
+    char   body[768];
+    size_t len = buildDiagJson(body, diagBodyCap(), level, msg);
+    if (len == 0) return -1;
+    return postDiagBody(url, (const uint8_t*) body, len, mode);
+}
+
+int iLabsDevMgmt::postDiagnosticJson(const char* url, const char* json,
+                                     ilabs_diag_mode_t mode) {
+    if (!url || !json || !s_post_fn) return -1;
+    size_t len = strlen(json);
+    // Reject an oversized bundle rather than truncate it -- a cut JSON body
+    // would be invalid and rejected by the server anyway.
+    if (len == 0 || len > diagBodyCap()) return -1;
+    return postDiagBody(url, (const uint8_t*) json, len, mode);
+}
+
 void iLabsDevMgmt::closeDiagChannel() {
     sessionClose();
+}
+
+// Build the heartbeat bundle:
+//   {"lvl":1,"msg":"heartbeat","fw":"M.m.p.r","devaddr":"0xXXXXXXXX","status":N[,"batt":X.XX]}
+// Battery is formatted as integer centivolts (no %f -- the embedded newlib-nano
+// printf is built without float support). Returns the length, or 0 on overflow.
+static size_t buildHeartbeatJson(char* buf, size_t cap, const ilabs_heartbeat_t* hb) {
+    int n;
+    if (hb->has_battery) {
+        int cv = (int)(hb->battery_volts * 100.0f + 0.5f);   // centivolts
+        if (cv < 0) cv = 0;
+        n = snprintf(buf, cap,
+                     "{\"lvl\":1,\"msg\":\"heartbeat\",\"fw\":\"%lu.%lu.%lu.%lu\","
+                     "\"devaddr\":\"0x%08lX\",\"status\":%lu,\"batt\":%d.%02d}",
+                     (unsigned long)((hb->fw_version >> 24) & 0xFF),
+                     (unsigned long)((hb->fw_version >> 16) & 0xFF),
+                     (unsigned long)((hb->fw_version >>  8) & 0xFF),
+                     (unsigned long)( hb->fw_version        & 0xFF),
+                     (unsigned long)hb->devaddr,
+                     (unsigned long)hb->status,
+                     cv / 100, cv % 100);
+    } else {
+        n = snprintf(buf, cap,
+                     "{\"lvl\":1,\"msg\":\"heartbeat\",\"fw\":\"%lu.%lu.%lu.%lu\","
+                     "\"devaddr\":\"0x%08lX\",\"status\":%lu}",
+                     (unsigned long)((hb->fw_version >> 24) & 0xFF),
+                     (unsigned long)((hb->fw_version >> 16) & 0xFF),
+                     (unsigned long)((hb->fw_version >>  8) & 0xFF),
+                     (unsigned long)( hb->fw_version        & 0xFF),
+                     (unsigned long)hb->devaddr,
+                     (unsigned long)hb->status);
+    }
+    if (n < 0 || (size_t) n >= cap) return 0;
+    return (size_t) n;
+}
+
+void iLabsDevMgmt::startHeartbeat(uint32_t interval_hours, const char* url,
+                                  ilabs_heartbeat_provider_fn provider, void* user) {
+    if (url) { strncpy(s_hb_url, url, sizeof(s_hb_url) - 1); s_hb_url[sizeof(s_hb_url) - 1] = 0; }
+    else       s_hb_url[0] = 0;
+    s_hb_provider    = provider;
+    s_hb_user        = user;
+    s_hb_interval_ms = hbHoursToMs(interval_hours);
+    s_hb_last_ms     = millis();                 // first send one interval from now
+    s_hb_enabled     = (s_hb_interval_ms != 0) && provider && (s_hb_url[0] != 0);
+}
+
+void iLabsDevMgmt::stopHeartbeat() {
+    s_hb_enabled     = false;
+    s_hb_interval_ms = 0;
+}
+
+bool iLabsDevMgmt::heartbeatEnabled() const {
+    return s_hb_enabled;
+}
+
+void iLabsDevMgmt::setHeartbeatInterval(uint32_t interval_hours) {
+    s_hb_interval_ms = hbHoursToMs(interval_hours);
+    s_hb_last_ms     = millis();                 // re-base the schedule off now
+    s_hb_enabled     = (s_hb_interval_ms != 0) && s_hb_provider && (s_hb_url[0] != 0);
+}
+
+bool iLabsDevMgmt::heartbeatDue() const {
+    if (!s_hb_enabled || s_hb_interval_ms == 0) return false;
+    return (uint32_t)(millis() - s_hb_last_ms) >= s_hb_interval_ms;
+}
+
+int iLabsDevMgmt::sendHeartbeat() {
+    if (!s_hb_enabled || !s_hb_provider || !s_post_fn || s_hb_url[0] == 0) return -1;
+    ilabs_heartbeat_t hb;
+    memset(&hb, 0, sizeof(hb));
+    s_hb_provider(&hb, s_hb_user);
+    char   body[768];
+    size_t len = buildHeartbeatJson(body, diagBodyCap(), &hb);
+    if (len == 0) return -1;
+    int http = postDiagBody(s_hb_url, (const uint8_t*) body, len, ILABS_DIAG_DIRECT);
+    if (http > 0) s_hb_last_ms = millis();       // delivered -> re-base schedule
+    return http;
 }
 
 bool iLabsDevMgmt::triggerUpdate(uint32_t download_fw_version) {

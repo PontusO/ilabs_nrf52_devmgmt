@@ -74,6 +74,27 @@ typedef enum {
     ILABS_DIAG_CLOSE     = 2,  // send (open if needed), then close the channel
 } ilabs_diag_mode_t;
 
+// ---- Heartbeat -----------------------------------------------------------
+// The library owns a periodic "device is alive + current vitals" heartbeat:
+// the cadence (interval in hours), the JSON assembly, and the POST. It is
+// sketch-agnostic -- the dynamic values come from a provider callback the
+// sketch registers, so nothing device-specific lives in the library. The
+// heartbeat is delivered as an INFO diagnostic ({"lvl":1,"msg":"heartbeat",
+// ...}) to the URL passed to startHeartbeat(), so it reuses the /diag
+// transport + server with no extra endpoint.
+typedef struct {
+    uint32_t fw_version;     // running firmware (e.g. APP_FW_VERSION); "M.m.p.r"
+    uint32_t devaddr;        // LoRaWAN devaddr (0 => not joined; emitted as hex)
+    uint32_t status;         // sketch-defined status bitmask (emitted as int)
+    bool     has_battery;    // true (Class A / battery-operated) => include batt
+    float    battery_volts;  // only used when has_battery
+} ilabs_heartbeat_t;
+
+// Called just before each heartbeat POST to fill the current vitals. Runs in
+// whatever context calls sendHeartbeat() (the sketch's modem-session task):
+// return CACHED values -- do not trigger blocking hardware reads here.
+typedef void (*ilabs_heartbeat_provider_fn)(ilabs_heartbeat_t* out, void* user);
+
 class iLabsDevMgmt {
 public:
     // ---- lifecycle ----
@@ -155,29 +176,65 @@ public:
                    iLabsLogUploadResult& out);
 
     // ---- diagnostics (short, severity-tagged, server-timestamped) ----
-    // Immediately POST one diagnostic message to `url` (the per-device diag
-    // endpoint) over the setUploadTransport() POST transport. Unlike uploadLog
-    // there is no gzip and no log store -- just one short line. `level` is
-    // 0=DEBUG 1=INFO 2=WARN 3=ERROR (clamped). Severity is sent as a `?sev=N`
-    // query param (the modem POST path can't set custom headers); the body is
-    // the raw message text, clamped to the transport's per-request cap. Returns
-    // the HTTP status (>=200 on a server reply, <=0 on transport failure).
+    // Immediately POST one diagnostic to `url` (the per-device diag endpoint)
+    // over the setUploadTransport() POST transport. Unlike uploadLog there is
+    // no gzip and no log store -- one small JSON bundle. The BODY is JSON; the
+    // server timestamps on receipt and stores the whole bundle (extra fields
+    // are queryable/displayable). Returns the HTTP status (>=200 on a server
+    // reply, <=0 on transport failure). The message is clamped to the
+    // transport's per-request cap.
     //
-    // `mode` drives the data channel via the onSessionBegin/onSessionEnd hooks
-    // (begin = open the link, end = close it):
+    // Convenience form: builds and JSON-escapes {"lvl":N,"msg":"..."}. `level`
+    // is 0=DEBUG 1=INFO 2=WARN 3=ERROR (clamped).
+    int postDiagnostic(const char* url, int level, const char* msg,
+                       ilabs_diag_mode_t mode = ILABS_DIAG_DIRECT);
+
+    // Rich form: POST a caller-built JSON bundle verbatim, e.g.
+    //   {"lvl":3,"msg":"LoRa join failed","rssi":-112,"fw":"1.0.0.72","imei":"..."}
+    // The server requires "lvl" (0-3) and "msg"; any other keys are stored in
+    // the diagnostic's jsonb payload. The caller owns building valid JSON
+    // (escape the message). Rejected (returns -1) if it exceeds the transport
+    // cap -- a truncated bundle would be invalid JSON.
+    int postDiagnosticJson(const char* url, const char* json,
+                           ilabs_diag_mode_t mode = ILABS_DIAG_DIRECT);
+
+    // Both forms drive the data channel via the onSessionBegin/onSessionEnd
+    // hooks (begin = open the link, end = close it):
     //   ILABS_DIAG_DIRECT     open (if closed), send, close   -- standalone
     //   ILABS_DIAG_KEEP_OPEN  open (if closed), send, LEAVE open for more
     //   ILABS_DIAG_CLOSE      send (open if needed), then close
-    // So a run of KEEP_OPEN calls (optionally with an uploadLog in between) then
-    // a CLOSE sends several transactions over one open link. If no session hooks
-    // are registered (the caller owns the modem session), it just POSTs.
-    int postDiagnostic(const char* url, int level, const char* msg,
-                       ilabs_diag_mode_t mode = ILABS_DIAG_DIRECT);
+    // A run of KEEP_OPEN calls (optionally with an uploadLog in between) then a
+    // CLOSE sends several transactions over one open link. With no session
+    // hooks registered (caller owns the modem session), it just POSTs.
 
     // Close a channel left open by ILABS_DIAG_KEEP_OPEN (fires onSessionEnd if
     // a session is open; no-op otherwise) -- e.g. after an uploadLog rode the
     // same open channel without a trailing diagnostic.
     void closeDiagChannel();
+
+    // ---- Heartbeat (periodic liveness + vitals) ----
+    // Start a repeated heartbeat every `interval_hours` (0 disables). `url` is
+    // the per-device endpoint it POSTs to (typically ".../diag/<DevEUI>"); it
+    // is copied. `provider` fills the vitals just before each send. The first
+    // heartbeat is due one interval after this call. The library tracks the
+    // schedule but does NOT own a timer/modem -- the sketch checks
+    // heartbeatDue() and calls sendHeartbeat() from inside a modem session
+    // (see the LTE example / integration notes).
+    void startHeartbeat(uint32_t interval_hours, const char* url,
+                        ilabs_heartbeat_provider_fn provider, void* user = nullptr);
+    void stopHeartbeat();
+    bool heartbeatEnabled() const;
+    // Change the cadence at runtime (e.g. from a config update); 0 disables.
+    // Re-bases the schedule off "now".
+    void setHeartbeatInterval(uint32_t interval_hours);
+    // True once at least `interval_hours` have elapsed since the last send
+    // (or since start). millis()-based, wrap-safe. False if disabled.
+    bool heartbeatDue() const;
+    // Build the heartbeat bundle from the provider and POST it now (ignores the
+    // schedule -- caller gates with heartbeatDue()). On a delivered POST
+    // (http > 0) the schedule is re-based off now. Returns the HTTP status
+    // (>0 delivered, <=0 transport error / not configured).
+    int sendHeartbeat();
 
     // ---- bootloader-settings passthroughs ----
     bool triggerUpdate(uint32_t download_fw_version);
