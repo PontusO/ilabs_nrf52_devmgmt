@@ -450,6 +450,61 @@ int iLabsDevMgmt::sendHeartbeat() {
     return http;
 }
 
+// --- Mailbox check-in --------------------------------------------------------
+
+namespace {
+struct CheckinRespCtx { uint8_t* buf; size_t cap; size_t len; };
+}  // namespace
+
+// Accumulate the POST response body (the binary command TLV) into the caller's
+// buffer, bounded by cap. Matches ilabs_fota_chunk_cb_t (POST responses reuse
+// it). Bytes past cap are dropped -- the command frame is small and bounded.
+static bool checkinRespCb(const uint8_t* chunk, size_t chunk_len,
+                          size_t total_received, size_t content_length, void* user) {
+    (void) total_received; (void) content_length;
+    CheckinRespCtx* c = static_cast<CheckinRespCtx*>(user);
+    size_t room = (c->len < c->cap) ? (c->cap - c->len) : 0;
+    size_t take = chunk_len < room ? chunk_len : room;
+    if (take) { memcpy(c->buf + c->len, chunk, take); c->len += take; }
+    return true;   // keep receiving
+}
+
+// Build the check-in body: heartbeat vitals + ack fields. `ack` is the last
+// command seq the device has fully executed (0 = none); `res` is that command's
+// result. Splices onto the object buildHeartbeatJson() produced.
+static size_t buildCheckinJson(char* buf, size_t cap, const ilabs_heartbeat_t* hb,
+                               uint32_t ack, int res_code) {
+    size_t n = buildHeartbeatJson(buf, cap, hb);
+    if (n == 0 || buf[n - 1] != '}') return n;
+    n--;   // reopen the object: drop the trailing '}'
+    int m;
+    if (ack > 0) {
+        m = snprintf(buf + n, cap - n,
+                     ",\"ack\":%lu,\"res\":{\"id\":%lu,\"code\":%d}}",
+                     (unsigned long) ack, (unsigned long) ack, res_code);
+    } else {
+        m = snprintf(buf + n, cap - n, ",\"ack\":0}");
+    }
+    if (m < 0 || (size_t) m >= cap - n) return 0;
+    return n + (size_t) m;
+}
+
+int iLabsDevMgmt::checkIn(uint32_t ack, int res_code, uint8_t* cmd_buf, size_t cmd_cap) {
+    if (!s_hb_provider || !s_post_fn || s_hb_url[0] == 0) return -1;
+    ilabs_heartbeat_t hb;
+    memset(&hb, 0, sizeof(hb));
+    s_hb_provider(&hb, s_hb_user);
+    char   body[768];
+    size_t len = buildCheckinJson(body, diagBodyCap(), &hb, ack, res_code);
+    if (len == 0) return -1;
+
+    CheckinRespCtx ctx = { cmd_buf, cmd_cap, 0 };
+    int http = s_post_fn(s_hb_url, (const uint8_t*) body, len, nullptr, checkinRespCb, &ctx);
+    if (http <= 0) return -1;              // transport error / not delivered
+    s_hb_last_ms = millis();               // delivered -> re-base the schedule
+    return (int) ctx.len;                  // >=0 command bytes (0 = empty mailbox)
+}
+
 bool iLabsDevMgmt::triggerUpdate(uint32_t download_fw_version) {
     return FotaQspi.triggerUpdate(download_fw_version);
 }

@@ -236,6 +236,14 @@ public:
     // (>0 delivered, <=0 transport error / not configured).
     int sendHeartbeat();
 
+    // Mailbox check-in: POST the heartbeat vitals + `ack` (the last command seq
+    // the device has fully executed; 0 = none) + its result `res_code`, and read
+    // the binary command response into cmd_buf. Returns the number of command
+    // bytes captured (0 = empty mailbox), or <0 on transport error. Uses the URL
+    // and provider from startHeartbeat(); re-bases the heartbeat schedule on a
+    // delivered POST. The response is a binary command TLV the caller parses.
+    int checkIn(uint32_t ack, int res_code, uint8_t* cmd_buf, size_t cmd_cap);
+
     // ---- bootloader-settings passthroughs ----
     bool triggerUpdate(uint32_t download_fw_version);
     bool readSettings(ilabs_fota_settings_t& out) const;
