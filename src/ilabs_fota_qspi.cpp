@@ -59,6 +59,20 @@ static void qspi_wake_from_dpd_gpio(void) {
 #if defined(PIN_QSPI_SCK) && defined(PIN_QSPI_CS) && defined(PIN_QSPI_IO0)
     NRF_QSPI->ENABLE = 0;                 // release the pins from the peripheral
 
+    // Force-disconnect the pins from the QSPI peripheral. The bootloader's wake
+    // works after a SOFT RESET, which resets NRF_QSPI (PSEL = disconnected, pins
+    // free). resume() has no reset: suspend()'s nrfx_qspi_uninit() leaves ENABLE
+    // = 0 but PSEL still ASSIGNED, so the pins stay owned by the peripheral and
+    // the GPIO bit-bang below never reaches the chip -- it stays in DPD and JEDEC
+    // fails (boot begin() works, resume() doesn't). Clearing PSEL here reproduces
+    // the clean-reset state; nrfx_qspi_init() re-assigns PSEL immediately after.
+    NRF_QSPI->PSEL.SCK = 0xFFFFFFFF;
+    NRF_QSPI->PSEL.CSN = 0xFFFFFFFF;
+    NRF_QSPI->PSEL.IO0 = 0xFFFFFFFF;
+    NRF_QSPI->PSEL.IO1 = 0xFFFFFFFF;
+    NRF_QSPI->PSEL.IO2 = 0xFFFFFFFF;
+    NRF_QSPI->PSEL.IO3 = 0xFFFFFFFF;
+
     pinMode(PIN_QSPI_CS,  OUTPUT); digitalWrite(PIN_QSPI_CS,  HIGH); // CS idle high
     pinMode(PIN_QSPI_SCK, OUTPUT); digitalWrite(PIN_QSPI_SCK, LOW);  // SCK idle low (mode 0)
     pinMode(PIN_QSPI_IO0, OUTPUT);                                   // IO0 = MOSI (single line)
@@ -125,6 +139,13 @@ bool iLabsFotaQspi::begin() {
 // which themselves resume/suspend per op -- without paying the
 // chip wake/sleep latency on every nested call.
 static int s_resume_depth = 0;
+
+// Rate-limit the resume-wake-failure log: emit it ONCE per failed streak, not on
+// every flush cycle. A persistently-asleep chip would otherwise flood the serial
+// console AND the log ring -- and each logged line re-triggers a flush, which
+// re-calls resume(), which fails, which logs again. Reset to false on the next
+// successful wake so a fresh failure is reported.
+static bool s_wake_fail_logged = false;
 
 // Power model: full peripheral teardown on suspend, full re-init on
 // resume. Restores the ~150-300 µA peripheral-baseline savings.
@@ -215,11 +236,19 @@ void iLabsFotaQspi::resume() {
         delayMicroseconds(50 * attempt);      // 50,100,150,200,250 us growing margin
         if (_flash.begin()) {
             _ready = true;
+            s_wake_fail_logged = false;        // recovered -> re-arm the failure log
             return;
         }
     }
 
-    LOG_ERROR("[fota-qspi] resume: flash.begin() failed after 5 attempts");
+    // Rate-limited (see s_wake_fail_logged): log once per failed streak. A
+    // persistently-asleep chip now degrades to "logs not persisted" rather than
+    // flooding + re-triggering the flush->resume->log loop.
+    if (!s_wake_fail_logged) {
+        s_wake_fail_logged = true;
+        LOG_ERROR("[fota-qspi] resume: DPD wake failed (flash.begin x5); "
+                  "log persistence paused until it recovers");
+    }
     s_resume_depth--;                         // failed -- back out (suspend() no-ops at 0)
 }
 
